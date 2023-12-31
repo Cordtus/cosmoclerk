@@ -8,24 +8,68 @@ const exec = require("child_process").exec;
 
 const pageSize = 18;
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
+const token = process.env.BOT_TOKEN; // Load the token from an environment variable
+const bot = new Telegraf(token);
 
-const bot = new Telegraf(BOT_TOKEN);
+function secureLog(message) {
+  const token = process.env.BOT_TOKEN; // Load the token from an environment variable
+  if (token && message.includes(token)) {
+    // If the token is in the message, redact it
+    const tokenRegex = new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+    const redactedMessage = message.replace(tokenRegex, 'REDACTED_BOT_TOKEN');
+    console.log(redactedMessage);
+  } else {
+    // If the token is not in the message, log it as is
+    console.log(message);
+  }
+}
 
 const REPO_URL = "https://github.com/Cordtus/chain-registry1.git";
 const REPO_DIR = path.join(__dirname, 'chain-registry1');
+const UPDATE_INTERVAL = STALE_HOURS * 3600000; // in milliseconds
 const STALE_HOURS = 6;
 
 async function cloneOrUpdateRepo() {
-	if (!fs.existsSync(REPO_DIR)) {
-		await exec(`git clone ${REPO_URL} ${REPO_DIR}`);
-	} else {
-		const stats = fs.statSync(REPO_DIR);
-		const hoursDiff = (new Date() - new Date(stats.mtime)) / 3600000;
-		if (hoursDiff > STALE_HOURS) {
-			await exec(`git -C ${REPO_DIR} pull`);
+	try {
+		if (!fs.existsSync(REPO_DIR)) {
+			secureLog(`Cloning repository: ${REPO_URL}`);
+			await execPromise(`git clone ${REPO_URL} ${REPO_DIR}`);
+			secureLog('Repository cloned successfully.');
+		} else {
+			const stats = fs.statSync(REPO_DIR);
+			const hoursDiff = (new Date() - new Date(stats.mtime)) / 3600000;
+			if (hoursDiff > STALE_HOURS) {
+				secureLog(`Updating repository in ${REPO_DIR}`);
+				await execPromise(`git -C ${REPO_DIR} pull`);
+				secureLog('Repository updated successfully.');
+			}
 		}
+	} catch (error) {
+		secureLog('Error in cloning or updating the repository:', error);
+		secureLog('Warning: Using old data due to update failure.');
+		// Use old data if the repository update fails
 	}
+}
+
+async function periodicUpdateRepo() {
+  try {
+    await cloneOrUpdateRepo();
+  } catch (error) {
+    secureLog('Error during periodic repository update:', error);
+  }
+}
+
+// Promisify the exec function to use with async/await
+function execPromise(command) {
+	return new Promise((resolve, reject) => {
+		exec(command, (error, stdout, stderr) => {
+			if (error) {
+				reject(error);
+				return;
+			}
+			resolve(stdout.trim());
+		});
+	});
 }
 
 let userLastAction = {};
@@ -89,7 +133,7 @@ async function chainInfo(chain) {
 			`Cointype: '${chainData.slip44}'\n` +
 			`Decimals: '${decimals}'`;
     } catch (error) {
-        console.error(`Error fetching data for ${chain}:`, error.stack);
+        secureLog(`Error fetching data for ${chain}:`, error.stack);
         return `Error fetching data for ${chain}. Please contact developer or open an issue on Github..`;
     }
 }
@@ -121,7 +165,7 @@ const formatEndpoints = (services, title, maxEndpoints) => {
 
         return `${rpcEndpoints}${restEndpoints}${grpcEndpoints}${evmHttpJsonRpcEndpoints}`;
     } catch (error) {
-        console.error(`Error fetching endpoints for ${chain}:`, error.message);
+        secureLog(`Error fetching endpoints for ${chain}:`, error.message);
         return `Error fetching endpoints for ${chain}. Please ensure the chain name is correct and try again.`;
     }
 }
@@ -142,7 +186,7 @@ async function chainPeerNodes(chain) {
 
 		return `${seeds}${persistentPeers}`;
 	} catch (error) {
-		console.error(`Error fetching peer nodes for ${chain}:`, error.message);
+		secureLog(`Error fetching peer nodes for ${chain}:`, error.message);
 		return `Error fetching peer nodes for ${chain}. Please contact developer or open an issue on Github..`;
 	}
 }
@@ -157,7 +201,7 @@ async function chainBlockExplorers(chain) {
 			.join('\n');
 		return explorersList;
 	} catch (error) {
-		console.error(`Error fetching block explorers for ${chain}:`, error.message);
+		secureLog(`Error fetching block explorers for ${chain}:`, error.message);
 		return `Error fetching block explorers for ${chain}. Please contact developer or open an issue on Github..`;
 	}
 }
@@ -203,35 +247,14 @@ function paginateChains(chains, currentPage) {
     const keyboardMarkup = Markup.inlineKeyboard(rowsOfButtons);
 
     // Debugging: Log the generated keyboardMarkup
-    console.log(`Generated keyboardMarkup for page ${currentPage}:`, JSON.stringify(keyboardMarkup));
+    secureLog(`Generated keyboardMarkup for page ${currentPage}:`, JSON.stringify(keyboardMarkup));
 
     // Error check for empty keyboard
     if (rowsOfButtons.length === 0) {
-        console.error('No buttons generated for keyboardMarkup');
+        secureLog('No buttons generated for keyboardMarkup');
     }
 
     return keyboardMarkup;
-}
-
-// [Existing bot setup and function definitions...]
-async function cloneOrUpdateRepo() {
-	try {
-		if (!fs.existsSync(REPO_DIR)) {
-			console.log(`Cloning repository: ${REPO_URL}`);
-			await exec(`git clone ${REPO_URL} ${REPO_DIR}`);
-			console.log('Repository cloned successfully.');
-		} else {
-			const stats = fs.statSync(REPO_DIR);
-			const hoursDiff = (new Date() - new Date(stats.mtime)) / 3600000;
-			if (hoursDiff > STALE_HOURS) {
-				console.log(`Updating repository in ${REPO_DIR}`);
-				await exec(`git -C ${REPO_DIR} pull`);
-				console.log('Repository updated successfully.');
-			}
-		}
-	} catch (error) {
-		console.error('Error in cloning or updating the repository:', error);
-	}
 }
 
 bot.action(/^select_chain:(.+)$/, async (ctx) => {
@@ -251,12 +274,9 @@ bot.on('text', async (ctx) => {
         if (!userLastAction[userId]) {
             // Reset user session
             userLastAction[userId] = {};
-
-            // Clone or update the repo only if the session is new
-            await cloneOrUpdateRepo();
         } else {
             // If session exists, skip cloning or updating the repo
-            console.log(`Session already exists for user ${userId}`);
+            secureLog(`Session already exists for user ${userId}`);
         }
 
         const chains = await getChainList();
@@ -264,36 +284,36 @@ bot.on('text', async (ctx) => {
         ctx.reply('Select a chain:', keyboard);
     } else {
         // Placeholder for handling other texts
-        console.log(`Received text: ${text}`);
+        secureLog(`Received text: ${text}`);
         // Future implementation for handling specific text inputs
     }
 });
 
 bot.action(/page:(\d+)/, async (ctx) => {
-    console.log("Page action triggered", ctx);
+    secureLog("Page action triggered", ctx);
     try {
         const page = parseInt(ctx.match[1]);
-        console.log(`Page requested: ${page}`);
+        secureLog(`Page requested: ${page}`);
 
         const chains = await getChainList();
-        console.log(`Total chains retrieved: ${chains.length}`);
+        secureLog(`Total chains retrieved: ${chains.length}`);
 
         if (!chains.length) {
-            console.log('No chains available');
+            secureLog('No chains available');
             return ctx.reply('No chains available.');
         }
 
         if (page < 0 || page >= Math.ceil(chains.length / pageSize)) {
-            console.error(`Invalid page number: ${page}`);
+            secureLog(`Invalid page number: ${page}`);
             return ctx.reply('Invalid page number.');
         }
 
         const keyboard = paginateChains(chains, page, pageSize); // Pass pageSize to paginateChains
 
-        console.log(`Generated keyboardMarkup for page ${page}:`, JSON.stringify(keyboard.reply_markup));
+        secureLog(`Generated keyboardMarkup for page ${page}:`, JSON.stringify(keyboard.reply_markup));
 
         if (!keyboard.reply_markup || keyboard.reply_markup.inline_keyboard.length === 0) {
-            console.error('Generated keyboard is empty or invalid');
+            secureLog('Generated keyboard is empty or invalid');
             return ctx.reply('Unable to generate navigation buttons.');
         }
 
@@ -307,10 +327,10 @@ bot.action(/page:(\d+)/, async (ctx) => {
             message_id: messageId
 });
 
-        console.log('Edit message response:', result);
+        secureLog('Edit message response:', result);
     } catch (error) {
-        console.error(`Error on page action: ${error}`);
-        console.error(`Error details:`, error);
+        secureLog(`Error on page action: ${error}`);
+        secureLog(`Error details:`, error);
         ctx.reply('An error occurred while processing your request.');
     }
 });
@@ -361,8 +381,11 @@ bot.action('block_explorers', async (ctx) => {
 	}
 });
 
+setInterval(periodicUpdateRepo, UPDATE_INTERVAL);
+periodicUpdateRepo();
+
 bot.launch().then(() => {
-	console.log('Bot launched successfully');
+	secureLog('Bot launched successfully');
 }).catch(error => {
-	console.error('Failed to launch the bot:', error);
+	secureLog('Failed to launch the bot:', error);
 });
