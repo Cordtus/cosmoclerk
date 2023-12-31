@@ -90,31 +90,40 @@ async function chainInfo(chain) {
 			`Decimals: '${decimals}'`;
     } catch (error) {
         console.error(`Error fetching data for ${chain}:`, error.stack);
-        return `Error fetching data for ${chain}. Please ensure the chain name is correct and try again.`;
+        return `Error fetching data for ${chain}. Please contact developer or open an issue on Github..`;
     }
 }
 
 async function chainEndpoints(chain) {
-	try {
-		const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
-		const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
+    try {
+        const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
+        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
 
-		const formatEndpoints = (services, title, maxEndpoints) => {
-			if (!services || services.length === 0) return '';
-			const limitedServices = services.slice(0, maxEndpoints);
-			return `${title}\n-----------\n  ${limitedServices.map(service => `${service.provider}: ${service.address}`).join("\n  ")}\n\n`;
-		};
+const formatEndpoints = (services, title, maxEndpoints) => {
+    if (!services || services.length === 0) return '';
+    const limitedServices = services.slice(0, maxEndpoints);
+    return `${title}\n-----------\n${limitedServices.map(service => {
+        // Replace non-alphanumeric and non-punctuation characters with an empty string
+        const provider = service.provider.replace(/[^\w\s.-]/g, '');
+        // Replace periods with underscores
+        const sanitizedProvider = provider.replace(/\./g, '_');
+        // Format the address with backticks
+        const address = `\`${service.address}\``;
+        return `  ${sanitizedProvider}: ${address}`;
+    }).join("\n")}\n\n`;
+};
 
-		const maxEndpointsPerService = 5;
-		const rpcEndpoints = formatEndpoints(chainData.apis.rpc, "RPC", maxEndpointsPerService);
-		const restEndpoints = formatEndpoints(chainData.apis.rest, "API", maxEndpointsPerService);
-		const grpcEndpoints = formatEndpoints(chainData.apis.grpc, "GRPC", maxEndpointsPerService);
+        const maxEndpointsPerService = 5;
+        const rpcEndpoints = formatEndpoints(chainData.apis.rpc, "RPC", maxEndpointsPerService);
+        const restEndpoints = formatEndpoints(chainData.apis.rest, "API", maxEndpointsPerService);
+        const grpcEndpoints = formatEndpoints(chainData.apis.grpc, "GRPC", maxEndpointsPerService);
+        const evmHttpJsonRpcEndpoints = formatEndpoints(chainData.apis['evm-http-jsonrpc'], "EVM-HTTP-JSONRPC", maxEndpointsPerService);
 
-		return `${rpcEndpoints}${restEndpoints}${grpcEndpoints}`;
-	} catch (error) {
-		console.error(`Error fetching endpoints for ${chain}:`, error.message);
-		return `Error fetching endpoints for ${chain}. Please ensure the chain name is correct and try again.`;
-	}
+        return `${rpcEndpoints}${restEndpoints}${grpcEndpoints}${evmHttpJsonRpcEndpoints}`;
+    } catch (error) {
+        console.error(`Error fetching endpoints for ${chain}:`, error.message);
+        return `Error fetching endpoints for ${chain}. Please ensure the chain name is correct and try again.`;
+    }
 }
 
 async function chainPeerNodes(chain) {
@@ -134,7 +143,7 @@ async function chainPeerNodes(chain) {
 		return `${seeds}${persistentPeers}`;
 	} catch (error) {
 		console.error(`Error fetching peer nodes for ${chain}:`, error.message);
-		return `Error fetching peer nodes for ${chain}. Please ensure the chain name is correct and try again.`;
+		return `Error fetching peer nodes for ${chain}. Please contact developer or open an issue on Github..`;
 	}
 }
 
@@ -149,7 +158,7 @@ async function chainBlockExplorers(chain) {
 		return explorersList;
 	} catch (error) {
 		console.error(`Error fetching block explorers for ${chain}:`, error.message);
-		return `Error fetching block explorers for ${chain}. Please ensure the chain name is correct and try again.`;
+		return `Error fetching block explorers for ${chain}. Please contact developer or open an issue on Github..`;
 	}
 }
 
@@ -318,14 +327,16 @@ bot.action('chain_info', async (ctx) => {
 });
 
 bot.action('endpoints', async (ctx) => {
-	const userId = ctx.from.id;
-	const userAction = userLastAction[userId];
-	if (userAction && userAction.chain) {
-		const endpoints = await chainEndpoints(userAction.chain);
-		ctx.reply(endpoints);
-	} else {
-		ctx.reply('No chain selected. Please select a chain first.');
-	}
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    if (userAction && userAction.chain) {
+        const endpoints = await chainEndpoints(userAction.chain);
+        // Use Markdown formatting and escape characters that need it
+        const formattedEndpoints = endpoints.replace(/_/g, '\\_'); // Escape underscores for Markdown
+        ctx.replyWithMarkdown(formattedEndpoints);
+    } else {
+        ctx.reply('No chain selected. Please select a chain first.');
+    }
 });
 
 bot.action('peer_nodes', async (ctx) => {
