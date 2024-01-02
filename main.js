@@ -1,6 +1,6 @@
 const {
-	Telegraf,
-	Markup
+        Telegraf,
+        Markup
 } = require("telegraf");
 const fs = require("fs");
 const path = require("path");
@@ -8,86 +8,74 @@ const exec = require("child_process").exec;
 
 const pageSize = 18;
 
-const token = process.env.BOT_TOKEN; // Load the token from an environment variable
-const bot = new Telegraf(token);
+const BOT_TOKEN = process.env.BOT_TOKEN;
 
-function secureLog(message) {
-  const token = process.env.BOT_TOKEN; // Load the token from an environment variable
-  if (token && message.includes(token)) {
-    // If the token is in the message, redact it
-    const tokenRegex = new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
-    const redactedMessage = message.replace(tokenRegex, 'REDACTED_BOT_TOKEN');
-    console.log(redactedMessage);
-  } else {
-    // If the token is not in the message, log it as is
-    console.log(message);
-  }
-}
+const bot = new Telegraf(BOT_TOKEN);
 
 const REPO_URL = "https://github.com/Cordtus/chain-registry1.git";
 const REPO_DIR = path.join(__dirname, 'chain-registry1');
-const UPDATE_INTERVAL = STALE_HOURS * 3600000; // in milliseconds
 const STALE_HOURS = 6;
+const UPDATE_INTERVAL = STALE_HOURS * 3600000; // in milliseconds
 
 async function cloneOrUpdateRepo() {
-	try {
-		if (!fs.existsSync(REPO_DIR)) {
-			secureLog(`Cloning repository: ${REPO_URL}`);
-			await execPromise(`git clone ${REPO_URL} ${REPO_DIR}`);
-			secureLog('Repository cloned successfully.');
-		} else {
-			const stats = fs.statSync(REPO_DIR);
-			const hoursDiff = (new Date() - new Date(stats.mtime)) / 3600000;
-			if (hoursDiff > STALE_HOURS) {
-				secureLog(`Updating repository in ${REPO_DIR}`);
-				await execPromise(`git -C ${REPO_DIR} pull`);
-				secureLog('Repository updated successfully.');
-			}
-		}
-	} catch (error) {
-		secureLog('Error in cloning or updating the repository:', error);
-		secureLog('Warning: Using old data due to update failure.');
-		// Use old data if the repository update fails
-	}
+        try {
+                if (!fs.existsSync(REPO_DIR)) {
+                        console.log(`Cloning repository: ${REPO_URL}`);
+                        await execPromise(`git clone ${REPO_URL} ${REPO_DIR}`);
+                        console.log('Repository cloned successfully.');
+                } else {
+                        const stats = fs.statSync(REPO_DIR);
+                        const hoursDiff = (new Date() - new Date(stats.mtime)) / 3600000;
+                        if (hoursDiff > STALE_HOURS) {
+                                console.log(`Updating repository in ${REPO_DIR}`);
+                                await execPromise(`git -C ${REPO_DIR} pull`);
+                                console.log('Repository updated successfully.');
+                        }
+                }
+        } catch (error) {
+                console.log('Error in cloning or updating the repository:', error);
+                console.warn('Warning: Using old data due to update failure.');
+                // Use old data if the repository update fails
+        }
 }
 
 async function periodicUpdateRepo() {
   try {
     await cloneOrUpdateRepo();
   } catch (error) {
-    secureLog('Error during periodic repository update:', error);
+    console.log('Error during periodic repository update:', error);
   }
 }
 
 // Promisify the exec function to use with async/await
 function execPromise(command) {
-	return new Promise((resolve, reject) => {
-		exec(command, (error, stdout, stderr) => {
-			if (error) {
-				reject(error);
-				return;
-			}
-			resolve(stdout.trim());
-		});
-	});
+        return new Promise((resolve, reject) => {
+                exec(command, (error, stdout, stderr) => {
+                        if (error) {
+                                reject(error);
+                                return;
+                        }
+                        resolve(stdout.trim());
+                });
+        });
 }
 
 let userLastAction = {};
 
 function updateUserLastAction(userId, data) {
-	userLastAction[userId] = {
-		...data,
-		timestamp: new Date()
-	};
+        userLastAction[userId] = {
+                ...data,
+                timestamp: new Date()
+        };
 }
 
 function cleanupUserSessions() {
-	const now = new Date();
-	Object.keys(userLastAction).forEach(userId => {
-		if ((now - new Date(userLastAction[userId].timestamp)) > 300000) {
-			delete userLastAction[userId];
-		}
-	});
+        const now = new Date();
+        Object.keys(userLastAction).forEach(userId => {
+                if ((now - new Date(userLastAction[userId].timestamp)) > 300000) {
+                        delete userLastAction[userId];
+                }
+        });
 }
 
 setInterval(cleanupUserSessions, 60000);
@@ -104,37 +92,35 @@ async function getChainList() {
 }
 
 async function chainInfo(chain) {
-	try {
-		const assetListPath = path.join(REPO_DIR, `${chain}/assetlist.json`);
-		const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
+    try {
+        const assetListPath = path.join(REPO_DIR, `${chain}/assetlist.json`);
+        const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
 
-		const assetData = JSON.parse(fs.readFileSync(assetListPath, 'utf8'));
-		const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
+        const assetData = JSON.parse(fs.readFileSync(assetListPath, 'utf8'));
+        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
 
-		const baseDenomUnit = assetData.assets[0]?.denom_units[0];
-		const baseDenom = baseDenomUnit ? baseDenomUnit.denom : "Unknown";
+        // Fetching 'Base Denom' from the specified path in 'chain.json'
+        const baseDenom = chainData.staking?.staking_tokens[0]?.denom || "Unknown";
 
-		// Get the last denom_unit for decimals
-		const lastDenomUnit = assetData.assets[0]?.denom_units.slice(-1)[0];
-		let decimals = lastDenomUnit ? lastDenomUnit.exponent : "Unknown";
+        const nativeDenomExponent = assetData.assets[0]?.denom_units.slice(-1)[0];
+        const decimals = nativeDenomExponent ? nativeDenomExponent.exponent : "Unknown";
 
-		// Use chainData directly from the local file
-		const rpcAddress = chainData.apis?.rpc[1]?.address || "Unknown";
-		const restAddress = chainData.apis?.rest[1]?.address || "Unknown";
-		const grpcAddress = chainData.apis?.grpc[1]?.address || "Unknown";
+        const rpcAddress = chainData.apis?.rpc?.find(api => api.address)?.address || "Unknown";
+        const restAddress = chainData.apis?.rest?.find(api => api.address)?.address || "Unknown";
+        const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
 
-		return `Chain ID: '${chainData.chain_id}'\n` +
-			`Chain Name: '${chainData.chain_name}'\n` +
-			`RPC: '${rpcAddress}'\n` +
-			`REST: '${restAddress}'\n` +
-			`GRPC: '${grpcAddress}'\n` +
-			`Address Prefix: '${chainData.bech32_prefix}'\n` +
-			`Base Denom: '${baseDenom}'\n` +
-			`Cointype: '${chainData.slip44}'\n` +
-			`Decimals: '${decimals}'`;
+        return `Chain ID: \`${chainData.chain_id}\`\n` +
+               `Chain Name: \`${chainData.chain_name}\`\n` +
+               `RPC: \`${rpcAddress}\`\n` +
+               `REST: \`${restAddress}\`\n` +
+               `GRPC: \`${grpcAddress}\`\n` +
+               `Address Prefix: \`${chainData.bech32_prefix}\`\n` +
+               `Base Denom: \`${baseDenom}\`\n` +
+               `Cointype: \`${chainData.slip44}\`\n` +
+               `Decimals: \`${decimals}\``;
     } catch (error) {
-        secureLog(`Error fetching data for ${chain}:`, error.stack);
-        return `Error fetching data for ${chain}. Please contact developer or open an issue on Github..`;
+        console.log(`Error fetching data for ${chain}:`, error.stack);
+        return `Error fetching data for ${chain}. Please contact developer or open an issue on Github.`;
     }
 }
 
@@ -165,58 +151,70 @@ const formatEndpoints = (services, title, maxEndpoints) => {
 
         return `${rpcEndpoints}${restEndpoints}${grpcEndpoints}${evmHttpJsonRpcEndpoints}`;
     } catch (error) {
-        secureLog(`Error fetching endpoints for ${chain}:`, error.message);
+        console.log(`Error fetching endpoints for ${chain}:`, error.message);
         return `Error fetching endpoints for ${chain}. Please ensure the chain name is correct and try again.`;
     }
 }
 
 async function chainPeerNodes(chain) {
-	try {
-		const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
-		const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
+    try {
+        const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
+        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
 
-		const formatPeers = (peers, title) => {
-			return peers && peers.length > 0 ?
-				`${title}\n---------------------\n${peers.map(peer => `\n${peer.provider}:\n---------------------\n id: ${peer.id}\n URL: ${peer.address}`).join("\n")}\n\n` :
-				'';
-		};
+        const sanitizeProvider = (provider) => {
+            if (!provider) return 'unnamed';
+            // Remove special characters and replace periods with underscores
+            return provider.replace(/[^\w\s.-]/g, '').replace(/\./g, '_');
+        };
 
-		const seeds = formatPeers(chainData.peers.seeds, "Seeds");
-		const persistentPeers = formatPeers(chainData.peers.persistent_peers, "Persistent Peers");
+        const formatPeers = (peers, title) => {
+            if (!peers || peers.length === 0) return `*${title}*\n---------------------\nNo data available\n\n`;
+            const formattedPeers = peers.map(peer => {
+                const provider = `*${sanitizeProvider(peer.provider)}*`;
+                const id = peer.id ? `id: \`${peer.id}\`` : 'id: unavailable';
+                const address = peer.address ? `URL: \`${peer.address}\`` : 'URL: unavailable';
+                return `\n${provider}:\n---------------------\n ${id}\n ${address}`;
+            }).join("\n");
+            return `*${title}*\n---------------------\n${formattedPeers}\n\n`;
+        };
 
-		return `${seeds}${persistentPeers}`;
-	} catch (error) {
-		secureLog(`Error fetching peer nodes for ${chain}:`, error.message);
-		return `Error fetching peer nodes for ${chain}. Please contact developer or open an issue on Github..`;
-	}
+        const seedsHeader = "Seed Nodes";
+        const peersHeader = "Peer Nodes";
+        const seeds = formatPeers(chainData.peers.seeds, seedsHeader);
+        const persistentPeers = formatPeers(chainData.peers.persistent_peers, peersHeader);
+
+        return `${seeds}${persistentPeers}`;
+    } catch (error) {
+        console.log(`Error fetching peer nodes for ${chain}:`, error.message);
+        return `Error fetching peer nodes for ${chain}. Please contact developer...`;
+    }
 }
 
 async function chainBlockExplorers(chain) {
-	try {
-		const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
-		const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
+    try {
+        const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
+        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
 
-		const explorersList = chainData.explorers
-			.map(explorer => `Name: ${explorer.kind}, Link: ${explorer.url}`)
-			.join('\n');
-		return explorersList;
-	} catch (error) {
-		secureLog(`Error fetching block explorers for ${chain}:`, error.message);
-		return `Error fetching block explorers for ${chain}. Please contact developer or open an issue on Github..`;
-	}
+        const explorersList = chainData.explorers
+            .map(explorer => `[${explorer.kind}](${explorer.url})`)
+            .join('\n');
+        return explorersList;
+    } catch (error) {
+        console.log(`Error fetching block explorers for ${chain}:`, error.message);
+        return `Error fetching block explorers for ${chain}. Please contact developer or open an issue on Github.`;
+    }
 }
 
-// Function to send the main menu (actions menu)
 function sendMainMenu(ctx) {
-	const mainMenuButtons = [
-		Markup.button.callback('Chain Info', 'chain_info'),
-		Markup.button.callback('Peer Nodes', 'peer_nodes'),
-		Markup.button.callback('Endpoints', 'endpoints'),
-		Markup.button.callback('Block Explorers', 'block_explorers')
-	];
-	return ctx.reply('Select an action:', Markup.inlineKeyboard(mainMenuButtons, {
-		columns: 2
-	}));
+        const mainMenuButtons = [
+                Markup.button.callback('Chain Info', 'chain_info'),
+                Markup.button.callback('Peer Nodes', 'peer_nodes'),
+                Markup.button.callback('Endpoints', 'endpoints'),
+                Markup.button.callback('Block Explorers', 'block_explorers')
+        ];
+        return ctx.reply('Select an action:', Markup.inlineKeyboard(mainMenuButtons, {
+                columns: 2
+        }));
 }
 
 function paginateChains(chains, currentPage) {
@@ -247,22 +245,22 @@ function paginateChains(chains, currentPage) {
     const keyboardMarkup = Markup.inlineKeyboard(rowsOfButtons);
 
     // Debugging: Log the generated keyboardMarkup
-    secureLog(`Generated keyboardMarkup for page ${currentPage}:`, JSON.stringify(keyboardMarkup));
+    console.log(`Generated keyboardMarkup for page ${currentPage}:`, JSON.stringify(keyboardMarkup));
 
     // Error check for empty keyboard
     if (rowsOfButtons.length === 0) {
-        secureLog('No buttons generated for keyboardMarkup');
+        console.log('No buttons generated for keyboardMarkup');
     }
 
     return keyboardMarkup;
 }
 
 bot.action(/^select_chain:(.+)$/, async (ctx) => {
-	const chain = ctx.match[1];
-	updateUserLastAction(ctx.from.id, {
-		chain: chain
-	});
-	sendMainMenu(ctx); // This will show the action menu
+        const chain = ctx.match[1];
+        updateUserLastAction(ctx.from.id, {
+                chain: chain
+        });
+        sendMainMenu(ctx); // This will show the action menu
 });
 
 bot.on('text', async (ctx) => {
@@ -276,7 +274,7 @@ bot.on('text', async (ctx) => {
             userLastAction[userId] = {};
         } else {
             // If session exists, skip cloning or updating the repo
-            secureLog(`Session already exists for user ${userId}`);
+            console.log(`Session already exists for user ${userId}`);
         }
 
         const chains = await getChainList();
@@ -284,36 +282,36 @@ bot.on('text', async (ctx) => {
         ctx.reply('Select a chain:', keyboard);
     } else {
         // Placeholder for handling other texts
-        secureLog(`Received text: ${text}`);
+        console.log(`Received text: ${text}`);
         // Future implementation for handling specific text inputs
     }
 });
 
 bot.action(/page:(\d+)/, async (ctx) => {
-    secureLog("Page action triggered", ctx);
+    console.log("Page action triggered", ctx);
     try {
         const page = parseInt(ctx.match[1]);
-        secureLog(`Page requested: ${page}`);
+        console.log(`Page requested: ${page}`);
 
         const chains = await getChainList();
-        secureLog(`Total chains retrieved: ${chains.length}`);
+        console.log(`Total chains retrieved: ${chains.length}`);
 
         if (!chains.length) {
-            secureLog('No chains available');
+            console.log('No chains available');
             return ctx.reply('No chains available.');
         }
 
         if (page < 0 || page >= Math.ceil(chains.length / pageSize)) {
-            secureLog(`Invalid page number: ${page}`);
+            console.log(`Invalid page number: ${page}`);
             return ctx.reply('Invalid page number.');
         }
 
         const keyboard = paginateChains(chains, page, pageSize); // Pass pageSize to paginateChains
 
-        secureLog(`Generated keyboardMarkup for page ${page}:`, JSON.stringify(keyboard.reply_markup));
+        console.log(`Generated keyboardMarkup for page ${page}:`, JSON.stringify(keyboard.reply_markup));
 
         if (!keyboard.reply_markup || keyboard.reply_markup.inline_keyboard.length === 0) {
-            secureLog('Generated keyboard is empty or invalid');
+            console.log('Generated keyboard is empty or invalid');
             return ctx.reply('Unable to generate navigation buttons.');
         }
 
@@ -327,23 +325,23 @@ bot.action(/page:(\d+)/, async (ctx) => {
             message_id: messageId
 });
 
-        secureLog('Edit message response:', result);
+        console.log('Edit message response:', result);
     } catch (error) {
-        secureLog(`Error on page action: ${error}`);
-        secureLog(`Error details:`, error);
+        console.log(`Error on page action: ${error}`);
+        console.log(`Error details:`, error);
         ctx.reply('An error occurred while processing your request.');
     }
 });
 
 bot.action('chain_info', async (ctx) => {
-	const userId = ctx.from.id;
-	const userAction = userLastAction[userId];
-	if (userAction && userAction.chain) {
-		const info = await chainInfo(userAction.chain);
-		ctx.reply(info);
-	} else {
-		ctx.reply('No chain selected. Please select a chain first.');
-	}
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    if (userAction && userAction.chain) {
+        const info = await chainInfo(userAction.chain);
+        ctx.replyWithMarkdown(info);
+    } else {
+        ctx.reply('No chain selected. Please select a chain first.');
+    }
 });
 
 bot.action('endpoints', async (ctx) => {
@@ -360,32 +358,34 @@ bot.action('endpoints', async (ctx) => {
 });
 
 bot.action('peer_nodes', async (ctx) => {
-	const userId = ctx.from.id;
-	const userAction = userLastAction[userId];
-	if (userAction && userAction.chain) {
-		const peer_nodes = await chainPeerNodes(userAction.chain);
-		ctx.reply(peer_nodes);
-	} else {
-		ctx.reply('No chain selected. Please select a chain first.');
-	}
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    if (userAction && userAction.chain) {
+        const peer_nodes = await chainPeerNodes(userAction.chain);
+        // Specify the parse mode for Markdown formatting
+        ctx.reply(peer_nodes, { parse_mode: 'Markdown' });
+    } else {
+        ctx.reply('No chain selected. Please select a chain first.');
+    }
 });
 
 bot.action('block_explorers', async (ctx) => {
-	const userId = ctx.from.id;
-	const userAction = userLastAction[userId];
-	if (userAction && userAction.chain) {
-		const block_explorers = await chainBlockExplorers(userAction.chain);
-		ctx.reply(block_explorers);
-	} else {
-		ctx.reply('No chain selected. Please select a chain first.');
-	}
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    if (userAction && userAction.chain) {
+        const block_explorers = await chainBlockExplorers(userAction.chain);
+        // Send the list of block explorers using Markdown format for the URLs
+        ctx.reply(block_explorers, { parse_mode: 'Markdown', disable_web_page_preview: true });
+    } else {
+        ctx.reply('No chain selected. Please select a chain first.');
+    }
 });
 
 setInterval(periodicUpdateRepo, UPDATE_INTERVAL);
 periodicUpdateRepo();
 
 bot.launch().then(() => {
-	secureLog('Bot launched successfully');
+        console.log('Bot launched successfully');
 }).catch(error => {
-	secureLog('Failed to launch the bot:', error);
+        console.log('Failed to launch the bot:', error);
 });
