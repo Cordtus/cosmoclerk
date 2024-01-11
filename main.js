@@ -331,15 +331,12 @@ function sendMainMenu(ctx, userId) {
         Markup.button.callback('Peer Nodes', 'peer_nodes'),
         Markup.button.callback('Endpoints', 'endpoints'),
         Markup.button.callback('Block Explorers', 'block_explorers'),
-        Markup.button.callback('IBC-ID', 'ibc_id')
+        Markup.button.callback('IBC-ID', 'ibc_id'),
         Markup.button.callback('Pool Incentives [non-sc]', 'pool_incentives')
-
     ];
+
     // Retrieve the last action for the user
     const lastAction = userLastAction[userId];
-
-    // Modify the mainMenuButtons to highlight the last action if necessary
-    // Add logic here to highlight the last selected action
 
     // Return the keyboard markup
     return Markup.inlineKeyboard(mainMenuButtons, {
