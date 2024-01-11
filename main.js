@@ -443,14 +443,17 @@ bot.action('pool_incentives', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
+        // Prompt user to enter a pool_id for AMM pool-type
         await ctx.reply(`Enter pool_id for ${userAction.chain} (AMM pool-type only):`);
+        // Set the expected action to 'awaiting_pool_id'
+        expectedAction[userId] = 'awaiting_pool_id';
     } else {
         await ctx.reply('No chain selected. Please select a chain first.');
     }
 });
 
 bot.on('text', async (ctx) => {
-    const text = ctx.message.text;
+    const text = ctx.message.text.trim();
     const userId = ctx.from.id;
 
     if (text === '/start') {
@@ -462,17 +465,20 @@ bot.on('text', async (ctx) => {
         }
         const chains = await getChainList();
         const keyboard = paginateChains(chains, 0, userId, pageSize);
-        ctx.reply('Select a chain:', keyboard);
-    } else if (text.startsWith('ibc/')) {
-        // Handle IBC denom input
+        await ctx.reply('Select a chain:', keyboard);
+    }  else if (text.startsWith('ibc/')) {
         const ibcHash = text.replace('ibc/', '');
         const userAction = userLastAction[userId];
-        if (userAction && userAction.chain) {
-            try {
-                const chainData = await chainInfo(userAction.chain);
-                let restAddress = chainData.restAddress.replace(/\/+$/, ''); // Remove trailing slashes
-                const url = new URL(`${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`);
 
+        if (userAction && userAction.chain) {
+            // First, retrieve the chain information
+            const chainData = await chainInfo(userAction.chain);
+            if (chainData && chainData.restAddress) {
+                let restAddress = chainData.restAddress.replace(/\/+$/, ''); // Remove trailing slashes
+                // Construct the URL with the correct restAddress
+                const url = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`;
+
+                // Now use the restAddress to make the request
                 https.get(url, (res) => {
                     let data = '';
 
@@ -493,18 +499,16 @@ bot.on('text', async (ctx) => {
                     console.error('Error fetching IBC denom trace:', error);
                     ctx.reply('Error fetching IBC denom trace. Please try again.');
                 });
-            } catch (error) {
-                console.error('Error fetching IBC denom trace:', error);
-                ctx.reply('Error fetching IBC denom trace. Please try again.');
+            } else {
+                // Handle the case where restAddress is not found in chainData
+                ctx.reply('Error: REST address not found for the selected chain.');
             }
         } else {
             ctx.reply('No chain selected. Please select a chain first.');
         }
-    }
-        else if (text.startsWith('pool/')) {
-        // Handle pool incentives input
+    } else if (text.startsWith('pool/')) {
         const poolId = text.replace('pool/', '');
-        handlePoolIncentives(ctx, poolId);
+        await handlePoolIncentives(ctx, poolId);
     } else {
         console.log(`Received text: ${text}`);
         // Future implementation for handling other specific text inputs
