@@ -62,11 +62,42 @@ function execPromise(command) {
 
 let userLastAction = {};
 
+// Function to start the bot interaction and show the chain selection menu
+async function startInteraction(ctx) {
+    const userId = ctx.from.id;
+    // Clear any existing session data
+    resetUserSession(userId);
+
+    // Retrieve the chain list and send the paginated keyboard markup
+    const chains = await getChainList();
+    const keyboard = paginateChains(chains, 0, userId, pageSize);
+    ctx.reply('Select a chain:', keyboard);
+}
+
+// Command handlers
+bot.start(async (ctx) => {
+    await startInteraction(ctx);
+});
+
+bot.command('reset', async (ctx) => {
+    await startInteraction(ctx);
+});
+
 function updateUserLastAction(userId, data) {
+    if (data) {
         userLastAction[userId] = {
-                ...data,
-                timestamp: new Date()
+            ...data,
+            timestamp: new Date()
         };
+    } else {
+        // Reset session data if null data is provided
+        delete userLastAction[userId];
+    }
+}
+
+// Function to reset the user's session
+function resetUserSession(userId) {
+    updateUserLastAction(userId, null);
 }
 
 function cleanupUserSessions() {
@@ -99,7 +130,6 @@ async function chainInfo(chain) {
         const assetData = JSON.parse(fs.readFileSync(assetListPath, 'utf8'));
         const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
 
-        // Fetching 'Base Denom' from the specified path in 'chain.json'
         const baseDenom = chainData.staking?.staking_tokens[0]?.denom || "Unknown";
 
         const nativeDenomExponent = assetData.assets[0]?.denom_units.slice(-1)[0];
@@ -109,15 +139,53 @@ async function chainInfo(chain) {
         const restAddress = chainData.apis?.rest?.find(api => api.address)?.address || "Unknown";
         const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
 
+        // Function to find a preferred explorer based on the starting character, ignoring URL prefixes and 'www.'
+        function findPreferredExplorer(explorers) {
+            if (!explorers || explorers.length === 0) return null;
+
+            // Strip common prefixes for comparison purposes
+            function stripPrefixes(name) {
+                return name.replace(/^(http:\/\/|https:\/\/)?(www\.)?/, '');
+            }
+
+            // Sort explorers by preference: 'C', 'M', then any
+            const preferredOrder = ['C', 'M'];
+            const sortedExplorers = explorers
+                .map(explorer => {
+                    return {
+                        kind: explorer.kind,
+                        url: explorer.url,
+                        compareKind: stripPrefixes(explorer.kind)
+                    };
+                })
+                .sort((a, b) => {
+                    for (const letter of preferredOrder) {
+                        if (a.compareKind.startsWith(letter) && b.compareKind.startsWith(letter)) {
+                            return a.compareKind.localeCompare(b.compareKind);
+                        }
+                    }
+                    if (a.compareKind.startsWith(preferredOrder[0])) return -1;
+                    if (b.compareKind.startsWith(preferredOrder[0])) return 1;
+                    if (a.compareKind.startsWith(preferredOrder[1])) return -1;
+                    if (b.compareKind.startsWith(preferredOrder[1])) return 1;
+                    return a.compareKind.localeCompare(b.compareKind);
+                });
+
+            // Return the URL of the most preferred explorer
+            return sortedExplorers.length > 0 ? sortedExplorers[0].url : "Unknown";
+        }
+
+        const blockExplorerUrl = findPreferredExplorer(chainData.explorers) || "Unknown";
+
         return `Chain ID: \`${chainData.chain_id}\`\n` +
                `Chain Name: \`${chainData.chain_name}\`\n` +
                `RPC: \`${rpcAddress}\`\n` +
                `REST: \`${restAddress}\`\n` +
-               `GRPC: \`${grpcAddress}\`\n` +
                `Address Prefix: \`${chainData.bech32_prefix}\`\n` +
                `Base Denom: \`${baseDenom}\`\n` +
                `Cointype: \`${chainData.slip44}\`\n` +
-               `Decimals: \`${decimals}\``;
+               `Decimals: \`${decimals}\`\n` +
+               `Block Explorer: \`${blockExplorerUrl}\``; // Add the Block Explorer line
     } catch (error) {
         console.log(`Error fetching data for ${chain}:`, error.stack);
         return `Error fetching data for ${chain}. Please contact developer or open an issue on Github.`;
@@ -196,7 +264,7 @@ async function chainBlockExplorers(chain) {
         const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
 
         const explorersList = chainData.explorers
-            .map(explorer => `[${explorer.kind}](${explorer.url})`)
+            .map(explorer => `*${explorer.kind.replace(/\./g, '_')}*\n____________________\n${explorer.url}\n`)
             .join('\n');
         return explorersList;
     } catch (error) {
@@ -205,25 +273,44 @@ async function chainBlockExplorers(chain) {
     }
 }
 
-function sendMainMenu(ctx) {
+function sendMainMenu(ctx, userId) {
         const mainMenuButtons = [
                 Markup.button.callback('Chain Info', 'chain_info'),
                 Markup.button.callback('Peer Nodes', 'peer_nodes'),
                 Markup.button.callback('Endpoints', 'endpoints'),
                 Markup.button.callback('Block Explorers', 'block_explorers')
         ];
-        return ctx.reply('Select an action:', Markup.inlineKeyboard(mainMenuButtons, {
-                columns: 2
-        }));
+    // Retrieve the last action for the user
+    const lastAction = userLastAction[userId];
+
+    // Modify the mainMenuButtons to highlight the last action if necessary
+    // Add logic here to highlight the last selected action
+
+    // Return the keyboard markup
+    return Markup.inlineKeyboard(mainMenuButtons, {
+        columns: 2
+    });
 }
 
-function paginateChains(chains, currentPage) {
+function paginateChains(chains, currentPage, userId, pageSize) {
+    console.log(`Paginating chains. Total chains: ${chains.length}, Current page: ${currentPage}, Page size: ${pageSize}`);
+
     const totalPages = Math.ceil(chains.length / pageSize);
     const start = currentPage * pageSize;
     const end = start + pageSize;
     const chainsToShow = chains.slice(start, end);
+    const lastSelectedChain = userLastAction[userId]?.chain;
 
-    const buttons = chainsToShow.map(chain => Markup.button.callback(chain, `select_chain:${chain}`));
+    // Log the chains that should be shown on the current page
+    console.log(`Chains to show on page ${currentPage}:`, chainsToShow);
+
+
+    // Create buttons and highlight the last selected one
+    const buttons = chainsToShow.map(chain => {
+        const isSelected = chain === lastSelectedChain;
+        const buttonText = isSelected ? `🔴 ${chain}` : chain;
+        return Markup.button.callback(buttonText, `select_chain:${chain}`);
+    });
 
     const rowsOfButtons = [];
     for (let i = 0; i < buttons.length; i += 3) {
@@ -242,6 +329,7 @@ function paginateChains(chains, currentPage) {
         rowsOfButtons.push(navigationButtons);
     }
 
+    // Generate the keyboard markup to return
     const keyboardMarkup = Markup.inlineKeyboard(rowsOfButtons);
 
     // Debugging: Log the generated keyboardMarkup
@@ -256,11 +344,38 @@ function paginateChains(chains, currentPage) {
 }
 
 bot.action(/^select_chain:(.+)$/, async (ctx) => {
-        const chain = ctx.match[1];
-        updateUserLastAction(ctx.from.id, {
-                chain: chain
+    const chain = ctx.match[1];
+    const userId = ctx.from.id;
+
+    // Update the user's last action
+    updateUserLastAction(userId, {
+        chain: chain,
+        // Store messageId & chatId for future reference
+        messageId: ctx.callbackQuery.message.message_id,
+        chatId: ctx.callbackQuery.message.chat.id
+    });
+
+    // Attempt to show the main menu for the selected chain
+    try {
+        const keyboardMarkup = sendMainMenu(ctx, userId);
+        await ctx.editMessageText('Select an action:', {
+            reply_markup: keyboardMarkup.reply_markup,
+            chat_id: ctx.callbackQuery.message.chat.id,
+            message_id: ctx.callbackQuery.message.message_id
         });
-        sendMainMenu(ctx); // This will show the action menu
+    } catch (error) {
+        console.error('Error while trying to show main menu:', error);
+        // If the original message is not found, send a new message with the menu
+        if (error.description === 'Bad Request: message to edit not found') {
+            const keyboardMarkup = sendMainMenu(ctx, userId);
+            const sentMessage = await ctx.reply('Select an action:', keyboardMarkup);
+            // Update the last action with the new message details
+            updateUserLastAction(userId, {
+                messageId: sentMessage.message_id,
+                chatId: sentMessage.chat.id
+            });
+        }
+    }
 });
 
 bot.on('text', async (ctx) => {
@@ -278,10 +393,10 @@ bot.on('text', async (ctx) => {
         }
 
         const chains = await getChainList();
-        const keyboard = paginateChains(chains, 0);
+        // Pass the userId and pageSize to paginateChains
+        const keyboard = paginateChains(chains, 0, userId, pageSize);
         ctx.reply('Select a chain:', keyboard);
     } else {
-        // Placeholder for handling other texts
         console.log(`Received text: ${text}`);
         // Future implementation for handling specific text inputs
     }
@@ -296,6 +411,9 @@ bot.action(/page:(\d+)/, async (ctx) => {
         const chains = await getChainList();
         console.log(`Total chains retrieved: ${chains.length}`);
 
+        // Get the userId to pass to paginateChains
+        const userId = ctx.from.id;
+
         if (!chains.length) {
             console.log('No chains available');
             return ctx.reply('No chains available.');
@@ -306,7 +424,8 @@ bot.action(/page:(\d+)/, async (ctx) => {
             return ctx.reply('Invalid page number.');
         }
 
-        const keyboard = paginateChains(chains, page, pageSize); // Pass pageSize to paginateChains
+        // Pass the pageSize to paginateChains
+        const keyboard = paginateChains(chains, page, userId, pageSize);
 
         console.log(`Generated keyboardMarkup for page ${page}:`, JSON.stringify(keyboard.reply_markup));
 
@@ -319,17 +438,15 @@ bot.action(/page:(\d+)/, async (ctx) => {
         const messageId = ctx.callbackQuery.message.message_id;
         const chatId = ctx.callbackQuery.message.chat.id;
 
-        const result = await ctx.editMessageReplyMarkup({
+        // Edit the previous message instead of sending a new one
+        await ctx.editMessageReplyMarkup({
             inline_keyboard: keyboard.reply_markup.inline_keyboard,
             chat_id: chatId,
             message_id: messageId
-});
-
-        console.log('Edit message response:', result);
+        });
     } catch (error) {
-        console.log(`Error on page action: ${error}`);
-        console.log(`Error details:`, error);
-        ctx.reply('An error occurred while processing your request.');
+        console.error(`Error in page action: ${error}`);
+        await ctx.reply('An error occurred while processing your request.');
     }
 });
 
@@ -337,8 +454,31 @@ bot.action('chain_info', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        const info = await chainInfo(userAction.chain);
-        ctx.replyWithMarkdown(info);
+        // Fetch the new chain info
+        const newChainInfo = await chainInfo(userAction.chain);
+
+        // Check if the message content would be the same after edit
+        if (newChainInfo === ctx.callbackQuery.message.text) {
+            // If the content is the same, don't edit the message
+            // Optionally send a notice that the information is already up to date
+            return ctx.answerCbQuery('The chain information is already up to date.');
+        }
+
+        // Proceed with editing the message if the content has changed
+        try {
+            await ctx.editMessageText(newChainInfo, {
+                parse_mode: 'Markdown',
+                disable_web_page_preview: true
+            });
+        } catch (error) {
+            console.error('Error editing message:', error);
+            // Handle specific error case
+            if (error.description.includes('message is not modified')) {
+                // Ignore or handle the redundant edit attempt
+            } else {
+                // Handle other types of errors appropriately
+            }
+        }
     } else {
         ctx.reply('No chain selected. Please select a chain first.');
     }
@@ -349,9 +489,28 @@ bot.action('endpoints', async (ctx) => {
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
         const endpoints = await chainEndpoints(userAction.chain);
-        // Use Markdown formatting and escape characters that need it
         const formattedEndpoints = endpoints.replace(/_/g, '\\_'); // Escape underscores for Markdown
-        ctx.replyWithMarkdown(formattedEndpoints);
+
+        try {
+            if (userAction.messageId) {
+                await ctx.telegram.editMessageText(
+                    userAction.chatId,
+                    userAction.messageId,
+                    null,
+                    formattedEndpoints,
+                    { parse_mode: 'Markdown' }
+                );
+            } else {
+                const sentMessage = await ctx.replyWithMarkdown(formattedEndpoints);
+                updateUserLastAction(userId, {
+                    messageId: sentMessage.message_id,
+                    chatId: sentMessage.chat.id
+                });
+            }
+        } catch (error) {
+            console.error('Error editing message:', error);
+            // Handle error, e.g., by sending a new message
+        }
     } else {
         ctx.reply('No chain selected. Please select a chain first.');
     }
@@ -362,8 +521,27 @@ bot.action('peer_nodes', async (ctx) => {
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
         const peer_nodes = await chainPeerNodes(userAction.chain);
-        // Specify the parse mode for Markdown formatting
-        ctx.reply(peer_nodes, { parse_mode: 'Markdown' });
+
+        try {
+            if (userAction.messageId) {
+                await ctx.telegram.editMessageText(
+                    userAction.chatId,
+                    userAction.messageId,
+                    null,
+                    peer_nodes,
+                    { parse_mode: 'Markdown' }
+                );
+            } else {
+                const sentMessage = await ctx.reply(peer_nodes, { parse_mode: 'Markdown' });
+                updateUserLastAction(userId, {
+                    messageId: sentMessage.message_id,
+                    chatId: sentMessage.chat.id
+                });
+            }
+        } catch (error) {
+            console.error('Error editing message:', error);
+            // Handle error, e.g., by sending a new message
+        }
     } else {
         ctx.reply('No chain selected. Please select a chain first.');
     }
@@ -374,18 +552,53 @@ bot.action('block_explorers', async (ctx) => {
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
         const block_explorers = await chainBlockExplorers(userAction.chain);
-        // Send the list of block explorers using Markdown format for the URLs
-        ctx.reply(block_explorers, { parse_mode: 'Markdown', disable_web_page_preview: true });
+
+        try {
+            if (userAction.messageId) {
+                await ctx.telegram.editMessageText(
+                    userAction.chatId,
+                    userAction.messageId,
+                    null,
+                    block_explorers,
+                    { disable_web_page_preview: true }
+                );
+            } else {
+                const sentMessage = await ctx.reply(block_explorers, { disable_web_page_preview: true });
+                updateUserLastAction(userId, {
+                    messageId: sentMessage.message_id,
+                    chatId: sentMessage.chat.id
+                });
+            }
+        } catch (error) {
+            console.error('Error editing message:', error);
+            // Handle error, e.g., by sending a new message
+        }
     } else {
         ctx.reply('No chain selected. Please select a chain first.');
     }
 });
 
+// Cleanup function to clear stored message details if needed
+function cleanupLastFunctionMessage() {
+    const now = new Date();
+    Object.keys(userLastAction).forEach(userId => {
+        if (userLastAction[userId] &&
+            (now - new Date(userLastAction[userId].timestamp)) > UPDATE_INTERVAL) {
+            userLastAction[userId] = null;
+        }
+    });
+}
+
 setInterval(periodicUpdateRepo, UPDATE_INTERVAL);
 periodicUpdateRepo();
 
+// Bot launch
 bot.launch().then(() => {
-        console.log('Bot launched successfully');
+    console.log('Bot launched successfully');
 }).catch(error => {
-        console.log('Failed to launch the bot:', error);
+    console.error('Failed to launch the bot:', error);
 });
+
+// Enable graceful stop
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
