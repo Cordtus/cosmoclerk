@@ -5,6 +5,7 @@ const {
 const fs = require("fs");
 const path = require("path");
 const exec = require("child_process").exec;
+const https = require('https');
 
 const pageSize = 18;
 
@@ -149,26 +150,26 @@ async function chainInfo(chain) {
             }
 
             // Sort explorers by preference: 'C', 'M', then any
-            const preferredOrder = ['C', 'M'];
+            const preferredOrder = ['c', 'm', 'C', 'M'];
             const sortedExplorers = explorers
                 .map(explorer => {
                     return {
                         kind: explorer.kind,
                         url: explorer.url,
-                        compareKind: stripPrefixes(explorer.kind)
+                        compareUrl: stripPrefixes(explorer.url)
                     };
                 })
                 .sort((a, b) => {
                     for (const letter of preferredOrder) {
-                        if (a.compareKind.startsWith(letter) && b.compareKind.startsWith(letter)) {
-                            return a.compareKind.localeCompare(b.compareKind);
+                        if (a.compareUrl.startsWith(letter) && b.compareUrl.startsWith(letter)) {
+                            return a.compareUrl.localeCompare(b.compareUrl);
                         }
                     }
-                    if (a.compareKind.startsWith(preferredOrder[0])) return -1;
-                    if (b.compareKind.startsWith(preferredOrder[0])) return 1;
-                    if (a.compareKind.startsWith(preferredOrder[1])) return -1;
-                    if (b.compareKind.startsWith(preferredOrder[1])) return 1;
-                    return a.compareKind.localeCompare(b.compareKind);
+                    if (a.compareUrl.startsWith(preferredOrder[0])) return -1;
+                    if (b.compareUrl.startsWith(preferredOrder[0])) return 1;
+                    if (a.compareUrl.startsWith(preferredOrder[1])) return -1;
+                    if (b.compareUrl.startsWith(preferredOrder[1])) return 1;
+                    return a.compareUrl.localeCompare(b.compareUrl);
                 });
 
             // Return the URL of the most preferred explorer
@@ -188,8 +189,9 @@ async function chainInfo(chain) {
                `Block Explorer: \`${blockExplorerUrl}\``; // Add the Block Explorer line
     } catch (error) {
         console.log(`Error fetching data for ${chain}:`, error.stack);
-        return `Error fetching data for ${chain}. Please contact developer or open an issue on Github.`;
+        return `Error fetching data for ${chain}: ${error.message}. Please contact developer or open an issue on Github.`;
     }
+
 }
 
 async function chainEndpoints(chain) {
@@ -273,13 +275,66 @@ async function chainBlockExplorers(chain) {
     }
 }
 
+async function handlePoolIncentives(ctx, poolId) {
+    const url = `http://jasbanza.dedicated.co.za:7000/pool/${poolId}`;
+    https.get(url, (res) => {
+        let rawData = '';
+
+        res.on('data', (chunk) => {
+            rawData += chunk;
+        });
+
+        res.on('end', () => {
+            try {
+                // Extract valid JSON from rawData
+                const matches = rawData.match(/{.*}/);
+                if (!matches) throw new Error("No valid JSON found in response");
+
+                const data = JSON.parse(matches[0]);
+                // Process and format the data
+                const formattedResponse = formatPoolIncentivesResponse(data);
+                ctx.reply(formattedResponse);
+            } catch (error) {
+                console.error('Error processing pool incentives data:', error);
+                ctx.reply('Error processing pool incentives data. Please try again.');
+            }
+        });
+    }).on('error', (error) => {
+        console.error('Error fetching pool incentives data:', error);
+        ctx.reply('Error fetching pool incentives data. Please try again.');
+    });
+}
+
+function formatPoolIncentivesResponse(data) {
+    let response = '';
+    data.data.forEach((incentive) => {
+        const startTime = new Date(incentive.start_time);
+        const numEpochs = parseInt(incentive.num_epochs_paid_over);
+        const filledEpochs = parseInt(incentive.filled_epochs);
+
+        response += `Start Time: ${startTime.toLocaleDateString()}\n`;
+        response += `Duration: ${numEpochs} days\n`;
+        response += `Elapsed: ${filledEpochs} days\n`;
+
+        incentive.coins.forEach((coin) => {
+            response += `Coin: ${coin.denom}, Amount: ${coin.amount}\n`;
+        });
+
+        response += '\n';
+    });
+    return response;
+}
+
 function sendMainMenu(ctx, userId) {
-        const mainMenuButtons = [
-                Markup.button.callback('Chain Info', 'chain_info'),
-                Markup.button.callback('Peer Nodes', 'peer_nodes'),
-                Markup.button.callback('Endpoints', 'endpoints'),
-                Markup.button.callback('Block Explorers', 'block_explorers')
-        ];
+    const mainMenuButtons = [
+        Markup.button.callback('Chain Info', 'chain_info'),
+        Markup.button.callback('Peer Nodes', 'peer_nodes'),
+        Markup.button.callback('Endpoints', 'endpoints'),
+        Markup.button.callback('Block Explorers', 'block_explorers'),
+        Markup.button.callback('IBC-ID', 'ibc_id')
+        Markup.button.callback('Pool Incentives [non-sc]', 'pool_incentives')
+
+    ];
     // Retrieve the last action for the user
     const lastAction = userLastAction[userId];
 
@@ -303,7 +358,6 @@ function paginateChains(chains, currentPage, userId, pageSize) {
 
     // Log the chains that should be shown on the current page
     console.log(`Chains to show on page ${currentPage}:`, chainsToShow);
-
 
     // Create buttons and highlight the last selected one
     const buttons = chainsToShow.map(chain => {
@@ -378,27 +432,85 @@ bot.action(/^select_chain:(.+)$/, async (ctx) => {
     }
 });
 
+bot.action('ibc_id', async (ctx) => {
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    if (userAction && userAction.chain) {
+        await ctx.reply(`Enter IBC denom for ${userAction.chain}:`);
+    } else {
+        await ctx.reply('No chain selected. Please select a chain first.');
+    }
+});
+
+bot.action('pool_incentives', async (ctx) => {
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    if (userAction && userAction.chain) {
+        await ctx.reply(`Enter pool_id for ${userAction.chain} (AMM pool-type only):`);
+    } else {
+        await ctx.reply('No chain selected. Please select a chain first.');
+    }
+});
+
 bot.on('text', async (ctx) => {
     const text = ctx.message.text;
     const userId = ctx.from.id;
 
     if (text === '/start') {
-        // Check if the user session already exists
+        // Reset or establish the user session
         if (!userLastAction[userId]) {
-            // Reset user session
             userLastAction[userId] = {};
         } else {
-            // If session exists, skip cloning or updating the repo
             console.log(`Session already exists for user ${userId}`);
         }
-
         const chains = await getChainList();
-        // Pass the userId and pageSize to paginateChains
         const keyboard = paginateChains(chains, 0, userId, pageSize);
         ctx.reply('Select a chain:', keyboard);
+    } else if (text.startsWith('ibc/')) {
+        // Handle IBC denom input
+        const ibcHash = text.replace('ibc/', '');
+        const userAction = userLastAction[userId];
+        if (userAction && userAction.chain) {
+            try {
+                const chainData = await chainInfo(userAction.chain);
+                let restAddress = chainData.restAddress.replace(/\/+$/, ''); // Remove trailing slashes
+                const url = new URL(`${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`);
+
+                https.get(url, (res) => {
+                    let data = '';
+
+                    res.on('data', (chunk) => {
+                        data += chunk;
+                    });
+
+                    res.on('end', () => {
+                        try {
+                            const response = JSON.parse(data);
+                            ctx.reply(`IBC Denom Trace: \n${JSON.stringify(response.denom_trace, null, 2)}`);
+                        } catch (parseError) {
+                            console.error('Error parsing response:', parseError);
+                            ctx.reply('Error fetching IBC denom trace. Please try again.');
+                        }
+                    });
+                }).on('error', (error) => {
+                    console.error('Error fetching IBC denom trace:', error);
+                    ctx.reply('Error fetching IBC denom trace. Please try again.');
+                });
+            } catch (error) {
+                console.error('Error fetching IBC denom trace:', error);
+                ctx.reply('Error fetching IBC denom trace. Please try again.');
+            }
+        } else {
+            ctx.reply('No chain selected. Please select a chain first.');
+        }
+    }
+        else if (text.startsWith('pool/')) {
+        // Handle pool incentives input
+        const poolId = text.replace('pool/', '');
+        handlePoolIncentives(ctx, poolId);
     } else {
         console.log(`Received text: ${text}`);
-        // Future implementation for handling specific text inputs
+        // Future implementation for handling other specific text inputs
     }
 });
 
