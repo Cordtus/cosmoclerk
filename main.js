@@ -49,7 +49,6 @@ async function periodicUpdateRepo() {
   }
 }
 
-// Promisify the exec function to use with async/await
 function execPromise(command) {
         return new Promise((resolve, reject) => {
                 exec(command, (error, stdout, stderr) => {
@@ -71,13 +70,12 @@ async function startInteraction(ctx) {
     // Clear any existing session data
     resetUserSession(userId);
 
-    // Retrieve the chain list and send the paginated keyboard markup
+    // Retrieve the chain list and generate paginated chain list
     const chains = await getChainList();
     const keyboard = paginateChains(chains, 0, userId, pageSize);
     ctx.reply('Select a chain:', keyboard);
 }
 
-// Command handlers
 bot.start(async (ctx) => {
     await startInteraction(ctx);
 });
@@ -98,7 +96,7 @@ function updateUserLastAction(userId, data) {
     }
 }
 
-// Function to reset the user's session
+// Reset the user session
 function resetUserSession(userId) {
     updateUserLastAction(userId, null);
 }
@@ -142,7 +140,7 @@ async function chainInfo(chain) {
         const restAddress = chainData.apis?.rest?.find(api => api.address)?.address || "Unknown";
         const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
 
-        // Function to find a preferred explorer based on the starting character, ignoring URL prefixes and 'www.'
+        // Function to prefer explorer based on first character, ignoring URL prefixes
         function findPreferredExplorer(explorers) {
             if (!explorers || explorers.length === 0) return null;
 
@@ -151,7 +149,7 @@ async function chainInfo(chain) {
                 return name.replace(/^(http:\/\/|https:\/\/)?(www\.)?/, '');
             }
 
-            // Sort explorers by preference: 'C', 'M', then any
+            // Sort explorers by preference: 'c', 'm', then any
             const preferredOrder = ['c', 'm'];
             const sortedExplorers = explorers
                 .map(explorer => {
@@ -174,7 +172,7 @@ async function chainInfo(chain) {
                     return a.compareUrl.localeCompare(b.compareUrl);
                 });
 
-            // Return the URL of the most preferred explorer
+            // Return the preferred explorer
             return sortedExplorers.length > 0 ? sortedExplorers[0].url : "Unknown";
         }
 
@@ -190,14 +188,13 @@ async function chainInfo(chain) {
                `Decimals: \`${decimals}\`\n` +
                `Block Explorer: \`${blockExplorerUrl}\``;
 
-        // Return an object with both the message and the data
+        // Return an object with both message and data
         return {
             message: message,
             data: {
                 rpcAddress,
                 restAddress,
                 grpcAddress
-                // Add other fields if necessary
             }
         };
     } catch (error) {
@@ -480,10 +477,10 @@ bot.on('text', async (ctx) => {
     const text = ctx.message.text.trim();
     const userId = ctx.from.id;
 
-    // This is where you check if you're expecting a pool_id from the user.
+    // Check if expecting pool_id from user.
     if (expectedAction[userId] === 'awaiting_pool_id') {
-        // Process the pool_id input
-        const poolId = parseInt(text, 10); // Ensure it's an integer
+        // Process pool_id input
+        const poolId = parseInt(text, 10);
         if (isNaN(poolId)) {
             await ctx.reply('Please enter a valid pool_id.');
         } else {
@@ -492,7 +489,7 @@ bot.on('text', async (ctx) => {
         }
 
     } else if (text === '/start') {
-        // Reset or establish the user session
+        // Reset/establish user session
         if (!userLastAction[userId]) {
             userLastAction[userId] = {};
         } else {
@@ -501,13 +498,13 @@ bot.on('text', async (ctx) => {
         const chains = await getChainList();
         const keyboard = paginateChains(chains, 0, userId, pageSize);
         await ctx.reply('Select a chain:', keyboard);
-    } else if (text.startsWith('ibc/')) { // Corrected the placement of this else if
+    } else if (text.startsWith('ibc/')) {
         const ibcHash = text.replace('ibc/', '');
         const userAction = userLastAction[userId];
         console.log(`Processing IBC request for hash: ${ibcHash}, chain: ${userAction?.chain}`);
 
         if (userAction && userAction.chain) {
-            // Retrieve the chain information as an object
+            // Retrieve chain info as object
             try {
                 const chainInfoResult = await chainInfo(userAction.chain);
                 console.log(`chainInfoResult: `, chainInfoResult);
@@ -567,7 +564,7 @@ bot.action(/page:(\d+)/, async (ctx) => {
         const chains = await getChainList();
         console.log(`Total chains retrieved: ${chains.length}`);
 
-        // Get the userId to pass to paginateChains
+        // Get userId to pass to paginateChains
         const userId = ctx.from.id;
 
         if (!chains.length) {
@@ -594,7 +591,7 @@ bot.action(/page:(\d+)/, async (ctx) => {
         const messageId = ctx.callbackQuery.message.message_id;
         const chatId = ctx.callbackQuery.message.chat.id;
 
-        // Edit the previous message instead of sending a new one
+        // Edit previous message instead of sending new
         await ctx.editMessageReplyMarkup({
             inline_keyboard: keyboard.reply_markup.inline_keyboard,
             chat_id: chatId,
@@ -610,16 +607,16 @@ bot.action('chain_info', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        // Fetch the new chain info
+        // Fetch new chain info
         const chainInfoResult = await chainInfo(userAction.chain);
 
-        // Check if the message content would be the same after edit
+        // Check if message content same after edit
         if (chainInfoResult.message === ctx.callbackQuery.message.text) {
-            // If the content is the same, don't edit the message
+            // If content same, don't edit message
             return ctx.answerCbQuery('The chain information is already up to date.');
         }
 
-        // Proceed with editing the message if the content has changed
+        // Proceed with editing message if content changed
         try {
             await ctx.editMessageText(chainInfoResult.message, {
                 parse_mode: 'Markdown',
@@ -627,11 +624,11 @@ bot.action('chain_info', async (ctx) => {
             });
         } catch (error) {
             console.error('Error editing message:', error);
-            // Handle specific error case
+
             if (error.description.includes('message is not modified')) {
                 // Ignore or handle the redundant edit attempt
             } else {
-                // Handle other types of errors appropriately
+                    
             }
         }
     } else {
@@ -666,7 +663,7 @@ bot.action('endpoints', async (ctx) => {
             }
         } catch (error) {
             console.error('Error editing message:', error);
-            // Handle error, e.g., by sending a new message
+            // Handle error, e.g., by sending new message
         }
     } else {
         ctx.reply('No chain selected. Please select a chain first.');
@@ -699,7 +696,7 @@ bot.action('peer_nodes', async (ctx) => {
             }
         } catch (error) {
             console.error('Error editing message:', error);
-            // Handle error, e.g., by sending a new message
+            // Handle error by sending new message
         }
     } else {
         ctx.reply('No chain selected. Please select a chain first.');
@@ -731,14 +728,14 @@ bot.action('block_explorers', async (ctx) => {
             }
         } catch (error) {
             console.error('Error editing message:', error);
-            // Handle error, e.g., by sending a new message
+            // Handle error by sending new message
         }
     } else {
         ctx.reply('No chain selected. Please select a chain first.');
     }
 });
 
-// Cleanup function to clear stored message details if needed
+// Clear stored message details if needed
 function cleanupLastFunctionMessage() {
     const now = new Date();
     Object.keys(userLastAction).forEach(userId => {
@@ -752,7 +749,6 @@ function cleanupLastFunctionMessage() {
 setInterval(periodicUpdateRepo, UPDATE_INTERVAL);
 periodicUpdateRepo();
 
-// Bot launch
 bot.launch().then(() => {
     console.log('Bot launched successfully');
 }).catch(error => {
