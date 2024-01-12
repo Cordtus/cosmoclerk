@@ -150,7 +150,7 @@ async function chainInfo(chain) {
             }
 
             // Sort explorers by preference: 'C', 'M', then any
-            const preferredOrder = ['c', 'm', 'C', 'M'];
+            const preferredOrder = ['c', 'm'];
             const sortedExplorers = explorers
                 .map(explorer => {
                     return {
@@ -178,7 +178,7 @@ async function chainInfo(chain) {
 
         const blockExplorerUrl = findPreferredExplorer(chainData.explorers) || "Unknown";
 
-        return `Chain ID: \`${chainData.chain_id}\`\n` +
+        const message = `Chain ID: \`${chainData.chain_id}\`\n` +
                `Chain Name: \`${chainData.chain_name}\`\n` +
                `RPC: \`${rpcAddress}\`\n` +
                `REST: \`${restAddress}\`\n` +
@@ -186,12 +186,22 @@ async function chainInfo(chain) {
                `Base Denom: \`${baseDenom}\`\n` +
                `Cointype: \`${chainData.slip44}\`\n` +
                `Decimals: \`${decimals}\`\n` +
-               `Block Explorer: \`${blockExplorerUrl}\``; // Add the Block Explorer line
+               `Block Explorer: \`${blockExplorerUrl}\``;
+
+        // Return an object with both the message and the data
+        return {
+            message: message,
+            data: {
+                rpcAddress,
+                restAddress,
+                grpcAddress
+                // Add other fields if necessary
+            }
+        };
     } catch (error) {
         console.log(`Error fetching data for ${chain}:`, error.stack);
         return `Error fetching data for ${chain}: ${error.message}. Please contact developer or open an issue on Github.`;
     }
-
 }
 
 async function chainEndpoints(chain) {
@@ -466,19 +476,22 @@ bot.on('text', async (ctx) => {
         const chains = await getChainList();
         const keyboard = paginateChains(chains, 0, userId, pageSize);
         await ctx.reply('Select a chain:', keyboard);
-    }  else if (text.startsWith('ibc/')) {
+    } else if (text.startsWith('ibc/')) { // Corrected the placement of this else if
         const ibcHash = text.replace('ibc/', '');
         const userAction = userLastAction[userId];
+        console.log(`Processing IBC request for hash: ${ibcHash}, chain: ${userAction?.chain}`);
 
         if (userAction && userAction.chain) {
-            // First, retrieve the chain information
-            const chainData = await chainInfo(userAction.chain);
-            if (chainData && chainData.restAddress) {
-                let restAddress = chainData.restAddress.replace(/\/+$/, ''); // Remove trailing slashes
-                // Construct the URL with the correct restAddress
-                const url = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`;
+            // Retrieve the chain information as an object
+            try {
+                const chainInfoResult = await chainInfo(userAction.chain);
+                console.log(`chainInfoResult: `, chainInfoResult);
 
-                // Now use the restAddress to make the request
+                if (chainInfoResult && chainInfoResult.data && chainInfoResult.data.restAddress) {
+                    let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, ''); // Remove trailing slashes
+                const url = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`;
+                console.log(`Requesting URL: ${url}`);
+
                 https.get(url, (res) => {
                     let data = '';
 
@@ -488,30 +501,35 @@ bot.on('text', async (ctx) => {
 
                     res.on('end', () => {
                         try {
-                            const response = JSON.parse(data);
-                            ctx.reply(`IBC Denom Trace: \n${JSON.stringify(response.denom_trace, null, 2)}`);
-                        } catch (parseError) {
-                            console.error('Error parsing response:', parseError);
-                            ctx.reply('Error fetching IBC denom trace. Please try again.');
-                        }
-                    });
-                }).on('error', (error) => {
-                    console.error('Error fetching IBC denom trace:', error);
-                    ctx.reply('Error fetching IBC denom trace. Please try again.');
-                });
-            } else {
-                // Handle the case where restAddress is not found in chainData
-                ctx.reply('Error: REST address not found for the selected chain.');
+                const response = JSON.parse(data);
+            ctx.reply(`IBC Denom Trace: \n${JSON.stringify(response.denom_trace, null, 2)}`);
+        } catch (parseError) {
+            console.error('Error parsing response:', parseError);
+            ctx.reply('Error fetching IBC denom trace. Please try again.');
+        }
+    });
+}).on('error', (error) => {
+    console.error('Error fetching IBC denom trace:', error);
+    ctx.reply('Error fetching IBC denom trace. Please try again.');
+});
+
+                } else {
+                    ctx.reply('Error: REST address not found for the selected chain.');
+                    console.log('REST address not found in chainInfoResult');
+                }
+            } catch (error) {
+                console.error('Error processing chainInfo:', error);
+                ctx.reply('Error processing request. Please try again.');
             }
         } else {
             ctx.reply('No chain selected. Please select a chain first.');
+            console.log('No chain selected for user action');
         }
     } else if (text.startsWith('pool/')) {
         const poolId = text.replace('pool/', '');
         await handlePoolIncentives(ctx, poolId);
     } else {
         console.log(`Received text: ${text}`);
-        // Future implementation for handling other specific text inputs
     }
 });
 
