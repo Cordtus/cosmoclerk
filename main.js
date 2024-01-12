@@ -15,7 +15,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const bot = new Telegraf(BOT_TOKEN);
 
 const REPO_URL = "https://github.com/cosmos/chain-registry.git";
-const REPO_DIR = path.join(__dirname, 'chain-registry');
+const REPO_DIR = path.join(__dirname, 'chain-registry1');
 const STALE_HOURS = 6;
 const UPDATE_INTERVAL = STALE_HOURS * 3600000; // in milliseconds
 
@@ -412,6 +412,12 @@ function paginateChains(chains, currentPage, userId, pageSize) {
     return keyboardMarkup;
 }
 
+process.on('SIGTERM', () => {
+    console.log('SIGTERM signal received. Shutting down gracefully.');
+    bot.stop('SIGTERM received'); // Replace 'bot' with your bot instance variable
+    process.exit(0);
+});
+
 bot.action(/^select_chain:(.+)$/, async (ctx) => {
     const chain = ctx.match[1];
     const userId = ctx.from.id;
@@ -428,6 +434,8 @@ bot.action(/^select_chain:(.+)$/, async (ctx) => {
     try {
         const keyboardMarkup = sendMainMenu(ctx, userId);
         await ctx.editMessageText('Select an action:', {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
             reply_markup: keyboardMarkup.reply_markup,
             chat_id: ctx.callbackQuery.message.chat.id,
             message_id: ctx.callbackQuery.message.message_id
@@ -603,20 +611,19 @@ bot.action('chain_info', async (ctx) => {
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
         // Fetch the new chain info
-        const newChainInfo = await chainInfo(userAction.chain);
+        const chainInfoResult = await chainInfo(userAction.chain);
 
         // Check if the message content would be the same after edit
-        if (newChainInfo === ctx.callbackQuery.message.text) {
+        if (chainInfoResult.message === ctx.callbackQuery.message.text) {
             // If the content is the same, don't edit the message
-            // Optionally send a notice that the information is already up to date
             return ctx.answerCbQuery('The chain information is already up to date.');
         }
 
         // Proceed with editing the message if the content has changed
         try {
-            await ctx.editMessageText(newChainInfo, {
+            await ctx.editMessageText(chainInfoResult.message, {
                 parse_mode: 'Markdown',
-                disable_web_page_preview: true
+                disable_web_page_preview: true,
             });
         } catch (error) {
             console.error('Error editing message:', error);
@@ -646,7 +653,9 @@ bot.action('endpoints', async (ctx) => {
                     userAction.messageId,
                     null,
                     formattedEndpoints,
-                    { parse_mode: 'Markdown' }
+                    { parse_mode: 'Markdown',
+                        disable_web_page_preview: true,
+                    }
                 );
             } else {
                 const sentMessage = await ctx.replyWithMarkdown(formattedEndpoints);
@@ -677,7 +686,9 @@ bot.action('peer_nodes', async (ctx) => {
                     userAction.messageId,
                     null,
                     peer_nodes,
-                    { parse_mode: 'Markdown' }
+                    { parse_mode: 'Markdown',
+                        disable_web_page_preview: true,
+                    }
                 );
             } else {
                 const sentMessage = await ctx.reply(peer_nodes, { parse_mode: 'Markdown' });
@@ -708,7 +719,8 @@ bot.action('block_explorers', async (ctx) => {
                     userAction.messageId,
                     null,
                     block_explorers,
-                    { disable_web_page_preview: true }
+                    { parse_mode: 'Markdown',
+                        disable_web_page_preview: true, }
                 );
             } else {
                 const sentMessage = await ctx.reply(block_explorers, { disable_web_page_preview: true });
