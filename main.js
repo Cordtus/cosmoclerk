@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const exec = require("child_process").exec;
 const https = require('https');
+const http = require('http');
 
 const pageSize = 18;
 
@@ -62,6 +63,7 @@ function execPromise(command) {
 }
 
 let userLastAction = {};
+const expectedAction = {};
 
 // Function to start the bot interaction and show the chain selection menu
 async function startInteraction(ctx) {
@@ -287,7 +289,7 @@ async function chainBlockExplorers(chain) {
 
 async function handlePoolIncentives(ctx, poolId) {
     const url = `http://jasbanza.dedicated.co.za:7000/pool/${poolId}`;
-    https.get(url, (res) => {
+    http.get(url, (res) => {
         let rawData = '';
 
         res.on('data', (chunk) => {
@@ -296,12 +298,13 @@ async function handlePoolIncentives(ctx, poolId) {
 
         res.on('end', () => {
             try {
-                // Extract valid JSON from rawData
-                const matches = rawData.match(/{.*}/);
-                if (!matches) throw new Error("No valid JSON found in response");
-
-                const data = JSON.parse(matches[0]);
-                // Process and format the data
+                // Extract JSON string from the HTML response
+                const jsonMatch = rawData.match(/<pre>([\s\S]*?)<\/pre>/);
+                if (!jsonMatch || jsonMatch.length < 2) {
+                    throw new Error("No valid JSON found in the server's response.");
+                }
+                const jsonString = jsonMatch[1];
+                const data = JSON.parse(jsonString);
                 const formattedResponse = formatPoolIncentivesResponse(data);
                 ctx.reply(formattedResponse);
             } catch (error) {
@@ -336,17 +339,22 @@ function formatPoolIncentivesResponse(data) {
 }
 
 function sendMainMenu(ctx, userId) {
+    // Start with the basic buttons that are always included
     const mainMenuButtons = [
         Markup.button.callback('Chain Info', 'chain_info'),
         Markup.button.callback('Peer Nodes', 'peer_nodes'),
         Markup.button.callback('Endpoints', 'endpoints'),
         Markup.button.callback('Block Explorers', 'block_explorers'),
-        Markup.button.callback('IBC-ID', 'ibc_id'),
-        Markup.button.callback('Pool Incentives [non-sc]', 'pool_incentives')
+        Markup.button.callback('IBC-ID', 'ibc_id')
     ];
 
     // Retrieve the last action for the user
     const lastAction = userLastAction[userId];
+
+    // Conditionally add the 'Pool Incentives [non-sc]' button if the chain is 'Osmosis'
+    if (lastAction.chain === 'osmosis') {
+        mainMenuButtons.push(Markup.button.callback('Pool Incentives [non-sc]', 'pool_incentives'));
+    }
 
     // Return the keyboard markup
     return Markup.inlineKeyboard(mainMenuButtons, {
@@ -453,9 +461,7 @@ bot.action('pool_incentives', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        // Prompt user to enter a pool_id for AMM pool-type
         await ctx.reply(`Enter pool_id for ${userAction.chain} (AMM pool-type only):`);
-        // Set the expected action to 'awaiting_pool_id'
         expectedAction[userId] = 'awaiting_pool_id';
     } else {
         await ctx.reply('No chain selected. Please select a chain first.');
@@ -466,7 +472,18 @@ bot.on('text', async (ctx) => {
     const text = ctx.message.text.trim();
     const userId = ctx.from.id;
 
-    if (text === '/start') {
+    // This is where you check if you're expecting a pool_id from the user.
+    if (expectedAction[userId] === 'awaiting_pool_id') {
+        // Process the pool_id input
+        const poolId = parseInt(text, 10); // Ensure it's an integer
+        if (isNaN(poolId)) {
+            await ctx.reply('Please enter a valid pool_id.');
+        } else {
+            await handlePoolIncentives(ctx, poolId);
+            delete expectedAction[userId]; // Clear the expected action after handling
+        }
+
+    } else if (text === '/start') {
         // Reset or establish the user session
         if (!userLastAction[userId]) {
             userLastAction[userId] = {};
