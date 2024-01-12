@@ -14,8 +14,8 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 
 const bot = new Telegraf(BOT_TOKEN);
 
-const REPO_URL = "https://github.com/Cordtus/chain-registry1.git";
-const REPO_DIR = path.join(__dirname, 'chain-registry1');
+const REPO_URL = "https://github.com/cosmos/chain-registry.git";
+const REPO_DIR = path.join(__dirname, 'chain-registry');
 const STALE_HOURS = 6;
 const UPDATE_INTERVAL = STALE_HOURS * 3600000; // in milliseconds
 
