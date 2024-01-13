@@ -317,7 +317,14 @@ async function handlePoolIncentives(ctx, poolId) {
 
 function formatPoolIncentivesResponse(data) {
     let response = '';
-    data.data.forEach((incentive) => {
+    
+    // Filter out entries from 1970 and sort by start time
+    const filteredAndSortedData = data.data
+        .filter(incentive => new Date(incentive.start_time).getFullYear() !== 1970)
+        .sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
+    
+    // Format the response
+    filteredAndSortedData.forEach((incentive) => {
         const startTime = new Date(incentive.start_time);
         const numEpochs = parseInt(incentive.num_epochs_paid_over);
         const filledEpochs = parseInt(incentive.filled_epochs);
@@ -332,6 +339,7 @@ function formatPoolIncentivesResponse(data) {
 
         response += '\n';
     });
+
     return response;
 }
 
