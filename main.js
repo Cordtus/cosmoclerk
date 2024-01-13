@@ -318,11 +318,12 @@ async function handlePoolIncentives(ctx, poolId) {
 function formatPoolIncentivesResponse(data) {
     let response = '';
     
-    // Filter out entries from 1970 and sort by start time
+    // Filter out entries from 1970 and with a duration of 1 day, then sort by start time
     const filteredAndSortedData = data.data
         .filter(incentive => {
             const startTime = new Date(incentive.start_time);
-            return startTime.getFullYear() !== 1970;
+            const numEpochs = parseInt(incentive.num_epochs_paid_over);
+            return startTime.getFullYear() !== 1970 && numEpochs !== 1;
         })
         .sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
     
