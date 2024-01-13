@@ -327,6 +327,11 @@ function formatPoolIncentivesResponse(data) {
         })
         .sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
     
+    // Check if the filtered data is empty
+    if (filteredAndSortedData.length === 0) {
+        return 'No incentives available after applying filters.';
+    }
+
     // Format the response
     filteredAndSortedData.forEach((incentive) => {
         const startTime = new Date(incentive.start_time);
