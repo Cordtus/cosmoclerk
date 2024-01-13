@@ -316,8 +316,13 @@ async function handlePoolIncentives(ctx, poolId) {
 }
 
 function formatPoolIncentivesResponse(data) {
+    // Check if the initial data is empty
+    if (!data.data || data.data.length === 0) {
+        return 'No incentives data available.';
+    }
+
     let response = '';
-    
+
     // Filter out entries from 1970 and with a duration of 1 day, then sort by start time
     const filteredAndSortedData = data.data
         .filter(incentive => {
@@ -326,10 +331,10 @@ function formatPoolIncentivesResponse(data) {
             return startTime.getFullYear() !== 1970 && numEpochs !== 1;
         })
         .sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
-    
+
     // Check if the filtered data is empty
     if (filteredAndSortedData.length === 0) {
-        return 'No incentives available after applying filters.';
+        return 'No incentives available.';
     }
 
     // Format the response
@@ -353,6 +358,7 @@ function formatPoolIncentivesResponse(data) {
 
     return response;
 }
+
 
 function sendMainMenu(ctx, userId) {
     // Start with the basic buttons that are always included
