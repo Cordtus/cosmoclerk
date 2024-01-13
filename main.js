@@ -320,7 +320,10 @@ function formatPoolIncentivesResponse(data) {
     
     // Filter out entries from 1970 and sort by start time
     const filteredAndSortedData = data.data
-        .filter(incentive => new Date(incentive.start_time).getFullYear() !== 1970)
+        .filter(incentive => {
+            const startTime = new Date(incentive.start_time);
+            return startTime.getFullYear() !== 1970;
+        })
         .sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
     
     // Format the response
@@ -333,9 +336,11 @@ function formatPoolIncentivesResponse(data) {
         response += `Duration: ${numEpochs} days\n`;
         response += `Elapsed: ${filledEpochs} days\n`;
 
-        incentive.coins.forEach((coin) => {
-            response += `Coin: ${coin.denom}, Amount: ${coin.amount}\n`;
-        });
+        if (incentive.coins) {
+            incentive.coins.forEach((coin) => {
+                response += `Coin: ${coin.denom}, Amount: ${coin.amount}\n`;
+            });
+        }
 
         response += '\n';
     });
