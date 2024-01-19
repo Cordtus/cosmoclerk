@@ -218,7 +218,7 @@ const formatEndpoints = (services, title, maxEndpoints) => {
         const sanitizedProvider = provider.replace(/\./g, '_');
         // Format the address with backticks
         const address = `\`${service.address}\``;
-        return `  ${sanitizedProvider}: ${address}`;
+        return `  ${sanitizedProvider}:\n${address}\n`;
     }).join("\n")}\n\n`;
 };
 
@@ -653,7 +653,7 @@ bot.action('chain_info', async (ctx) => {
             if (error.description.includes('message is not modified')) {
                 // Ignore or handle the redundant edit attempt
             } else {
-                    
+
             }
         }
     } else {
