@@ -77,7 +77,7 @@ const expectedAction = {};
 // Function to start the bot interaction and show the chain selection menu
 async function startInteraction(ctx) {
     const userId = ctx.from.id;
-    // Clear any existing session data
+    // Reset the user's session on /start command
     resetUserSession(userId);
 
     // Retrieve the chain list and generate paginated chain list
@@ -90,9 +90,10 @@ bot.start(async (ctx) => {
     await startInteraction(ctx);
 });
 
-bot.command('reset', async (ctx) => {
-    await startInteraction(ctx);
-});
+// Reset the user session
+function resetUserSession(userId) {
+    updateUserLastAction(userId, null);
+}
 
 function updateUserLastAction(userId, data) {
     if (data) {
@@ -106,24 +107,22 @@ function updateUserLastAction(userId, data) {
     }
 }
 
-// Reset the user session
-function resetUserSession(userId) {
-    updateUserLastAction(userId, null);
-}
-
+// Cleanup function for user sessions
 function cleanupUserSessions() {
-        const now = new Date();
-        Object.keys(userLastAction).forEach(userId => {
-                if ((now - new Date(userLastAction[userId].timestamp)) > 300000) {
-                        delete userLastAction[userId];
-                }
-        });
+    const now = new Date();
+    Object.keys(userLastAction).forEach(userId => {
+        // Check if the session has been inactive for more than the timeout period (e.g., 5 minutes)
+        if ((now - new Date(userLastAction[userId].timestamp)) > 600000) { // 600000 ms = 10 minutes
+            delete userLastAction[userId];
+        }
+    });
 }
 
-setInterval(cleanupUserSessions, 60000);
+// Set the cleanup interval for user sessions
+setInterval(cleanupUserSessions, 3600000); // Run every minute
 
-async function getChainList() {
-    const directories = fs.readdirSync(REPO_DIR, {
+async function getChainList(directory = REPO_DIR) {
+    const directories = fs.readdirSync(directory, {
             withFileTypes: true
         })
         .filter(dirent => dirent.isDirectory() && /^[A-Za-z0-9]/.test(dirent.name))
@@ -133,11 +132,58 @@ async function getChainList() {
     return directories.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
+// Function to check if an endpoint is healthy
+async function isEndpointHealthy(endpoint) {
+    return new Promise((resolve) => {
+        https.get(endpoint + '/status', (resp) => {
+            let data = '';
+
+            // A chunk of data has been received.
+            resp.on('data', (chunk) => {
+                data += chunk;
+            });
+
+            // The whole response has been received.
+            resp.on('end', () => {
+                try {
+                    const jsonData = JSON.parse(data);
+                    const latestBlockTime = new Date(jsonData.result.sync_info.latest_block_time);
+                    const now = new Date();
+                    resolve(now - latestBlockTime < 60000); // true if less than 1 minute old
+                } catch (e) {
+                    resolve(false);
+                }
+            });
+        }).on("error", (err) => {
+            console.log("Error: " + err.message);
+            resolve(false);
+        });
+    });
+}
+
+async function getTestnetsList() {
+    // Assuming testnets is a directory inside REPO_DIR
+    const testnetsDir = path.join(REPO_DIR, 'testnets');
+    if (!fs.existsSync(testnetsDir)) {
+        console.log('Testnets directory does not exist.');
+        return [];
+    }
+
+    const directories = fs.readdirSync(testnetsDir, { withFileTypes: true })
+        .filter(dirent => dirent.isDirectory() && /^[A-Za-z0-9]/.test(dirent.name))
+        .map(dirent => `testnets/${dirent.name}`);
+
+    return directories.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
 async function chainInfo(ctx, chain) {
     try {
         const userId = ctx.from.id;
-        const assetListPath = path.join(REPO_DIR, `${chain}/assetlist.json`);
-        const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
+        const userAction = userLastAction[userId];
+        const directory = userAction.browsingTestnets ? path.join(REPO_DIR, 'testnets', chain) : path.join(REPO_DIR, chain);
+
+        const assetListPath = path.join(directory, 'assetlist.json');
+        const chainJsonPath = path.join(directory, 'chain.json');
 
         const assetData = JSON.parse(fs.readFileSync(assetListPath, 'utf8'));
         const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
@@ -147,8 +193,17 @@ async function chainInfo(ctx, chain) {
         const nativeDenomExponent = assetData.assets[0]?.denom_units.slice(-1)[0];
         const decimals = nativeDenomExponent ? nativeDenomExponent.exponent : "Unknown";
 
-        const rpcAddress = chainData.apis?.rpc?.find(api => api.address)?.address || "Unknown";
-        const restAddress = chainData.apis?.rest?.find(api => api.address)?.address || "Unknown";
+        async function findHealthyEndpoint(endpoints) {
+            for (const endpoint of endpoints) {
+                if (await isEndpointHealthy(endpoint.address)) {
+                    return endpoint.address;
+                }
+            }
+            return "Unknown"; // Return Unknown if no healthy endpoint found
+        }
+
+        const rpcAddress = await findHealthyEndpoint(chainData.apis.rpc);
+        const restAddress = await findHealthyEndpoint(chainData.apis.rest);
         const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
 
         // Function to prefer explorer based on first character, ignoring URL prefixes
@@ -210,14 +265,20 @@ async function chainInfo(ctx, chain) {
         };
     } catch (error) {
         console.log(`Error fetching data for ${chain}:`, error.stack);
-        return `Error fetching data for ${chain}: ${error.message}. Please contact developer or open an issue on Github.`;
+        return `Error fetching data for ${chain}: ${error.message}. Please contact developer or open an issue on GitHub.`;
     }
 }
 
 async function chainEndpoints(ctx, chain) {
     try {
-        const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
+        const userId = ctx.from.id;
+        const userAction = userLastAction[userId];
+        // Determine the correct directory path based on whether we're looking at testnets or mainnets
+        const directory = userAction.browsingTestnets ? path.join(REPO_DIR, 'testnets', chain) : path.join(REPO_DIR, chain);
+
+        const chainJsonPath = path.join(directory, 'chain.json');
         const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
+
 
         const formatService = (service) => {
             // Bold format for provider and escape underscores
@@ -288,9 +349,11 @@ function splitIntoParts(str, maxLength) {
 
 async function chainPeerNodes(ctx, chain) {
     try {
-        const userId = ctx.from.id;
-        const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
-        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    const directory = userAction.browsingTestnets ? path.join(REPO_DIR, 'testnets', chain) : path.join(REPO_DIR, chain);
+    const chainJsonPath = path.join(directory, 'chain.json');
+    const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
 
         const sanitizeProvider = (provider) => {
             if (!provider) return 'unnamed';
@@ -329,9 +392,12 @@ function sanitizeUrl(url) {
 
 async function chainBlockExplorers(ctx, chain) {
     try {
-        const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
+        const userId = ctx.from.id;
+        const userAction = userLastAction[userId];
+        const directory = userAction.browsingTestnets ? path.join(REPO_DIR, 'testnets', chain) : path.join(REPO_DIR, chain);
+        const chainJsonPath = path.join(directory, 'chain.json');
         const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
-        
+
         const explorersList = chainData.explorers
             .map(explorer => {
         const name = `*${explorer.kind.replace(/[^\w\s.-]/g, '').replace(/\./g, '_')}*`;
@@ -459,16 +525,16 @@ async function handleMainMenuAction(ctx, action, chain) {
                     } else {
                         await ctx.replyWithMarkdown(chainEndpointsMessage);
                     }
-                } else {
-                    console.error('Error: Endpoints data is unexpectedly empty.');
-                }
+                 }; // else {
+           // console.error('Error: Endpoints data is unexpectedly empty.');
+               // }
                 break;
             case 'block_explorers':
                 const blockExplorersMessage = await chainBlockExplorers(ctx, userAction.chain);
                 await ctx.replyWithMarkdown(blockExplorersMessage);
                 break;
             case 'ibc_id':
-                await ctx.reply(`Enter IBC denom for ${escapeMarkdown(userAction.chain)}:`, { parse_mode: 'Markdown' });
+                await ctx.reply(`Enter IBC denom for ${userAction.chain}:`, { parse_mode: 'Markdown' });
                 break;
             case 'pool_incentives':
                 if (userAction.chain === 'osmosis') {
@@ -489,22 +555,21 @@ async function handleMainMenuAction(ctx, action, chain) {
 }
 
 // Utility function to escape Markdown special characters
-function escapeMarkdown(text) {
-    return text.replace(/[_*[\]()~`>#+-=|{}.!]/g, '\\$&');
-}
-
 function sendMainMenu(ctx, userId) {
+    const userAction = userLastAction[userId];
     const mainMenuButtons = [
         Markup.button.callback('1. Chain Info', 'chain_info'),
         Markup.button.callback('2. Peer Nodes', 'peer_nodes'),
         Markup.button.callback('3. Endpoints', 'endpoints'),
-        Markup.button.callback('4. Block Explorers', 'block_explorers'),
-        Markup.button.callback('5. IBC-ID', 'ibc_id')
+        Markup.button.callback('4. Block Explorers', 'block_explorers')
     ];
 
-    const lastAction = userLastAction[userId];
-    if (lastAction && lastAction.chain === 'osmosis') {
-        mainMenuButtons.push(Markup.button.callback('6. Pool Incentives [non-sc]', 'pool_incentives'));
+    // Add IBC-ID and Pool Incentives buttons only for mainnet chains
+    if (!userAction.browsingTestnets) {
+        mainMenuButtons.push(Markup.button.callback('5. IBC-ID', 'ibc_id'));
+        if (userAction.chain === 'osmosis') {
+            mainMenuButtons.push(Markup.button.callback('6. Pool Incentives [non-sc]', 'pool_incentives'));
+        }
     }
 
     return Markup.inlineKeyboard(mainMenuButtons, { columns: 2 });
@@ -560,24 +625,42 @@ function paginateChains(chains, currentPage, userId, pageSize) {
     return keyboardMarkup;
 }
 
-process.on('SIGTERM', () => {
-    console.log('SIGTERM signal received. Shutting down gracefully.');
-    bot.stop('SIGTERM received'); // Replace 'bot' with your bot instance variable
-    process.exit(0);
-});
+async function showTestnets(ctx, userId) {
+    const testnetsList = await getTestnetsList(); // Implement this function as shown earlier
+    const keyboardMarkup = paginateChains(testnetsList, 0, userId, 18); // Assuming a page size of 18
+    await ctx.reply('Select a testnet:', keyboardMarkup);
+}
 
 bot.action(/^select_chain:(.+)$/, async (ctx) => {
     const chain = ctx.match[1];
     const userId = ctx.from.id;
-    // Update the user's last action
-    updateUserLastAction(userId, {
-        chain: chain,
-        messageId: ctx.callbackQuery.message.message_id,
-        chatId: ctx.callbackQuery.message.chat.id
-    });
 
-    // Show the main menu for the selected chain
-    try {
+    if (chain === 'testnets') {
+        // Assuming you have a separate directory for testnets
+        const testnetsDir = path.join(REPO_DIR, 'testnets');
+        const testnetsList = await getChainList(testnetsDir);
+
+        // Store the fact that the user is looking at testnets and the list of testnets
+        updateUserLastAction(userId, {
+            browsingTestnets: true,
+            testnetsList: testnetsList,
+            messageId: ctx.callbackQuery.message.message_id,
+            chatId: ctx.callbackQuery.message.chat.id
+        });
+
+        // Show the list of testnets using the pagination function
+        const keyboardMarkup = paginateChains(testnetsList, 0, userId, 18); // Adjust page size as needed
+        await ctx.reply('Select a testnet:', keyboardMarkup);
+    } else {
+        // If the user is not browsing testnets, store the selected chain
+        updateUserLastAction(userId, {
+            chain: chain,
+            messageId: ctx.callbackQuery.message.message_id,
+            chatId: ctx.callbackQuery.message.chat.id,
+            browsingTestnets: false
+        });
+
+        // Show the main menu for the selected chain
         const keyboardMarkup = sendMainMenu(ctx, userId);
         await ctx.editMessageText('Select an action:', {
             parse_mode: 'Markdown',
@@ -586,9 +669,6 @@ bot.action(/^select_chain:(.+)$/, async (ctx) => {
             chat_id: ctx.callbackQuery.message.chat.id,
             message_id: ctx.callbackQuery.message.message_id
         });
-    } catch (error) {
-        console.error('Error while trying to show main menu:', error);
-        // Handle error
     }
 });
 
@@ -786,12 +866,12 @@ bot.action('endpoints', async (ctx) => {
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
             const endpoints = await chainEndpoints(ctx, userAction.chain);
-          
+
         //    if (!endpoints || typeof endpoints !== 'string' || !endpoints.trim()) {
           //      console.error(`Endpoints data is unexpectedly empty for chain ${userAction.chain}.`);
          //       await ctx.reply('Error: Received unexpectedly empty data.');
           //      return;
-            
+
 
            // console.log('Formatted Endpoints:', endpoints);
         try {
@@ -801,8 +881,8 @@ bot.action('endpoints', async (ctx) => {
                     userAction.messageId,
                     null,
                     endpoints,
-                    { parse_mode: 'Markdown', 
-                        disable_web_page_preview: true, 
+                    { parse_mode: 'Markdown',
+                        disable_web_page_preview: true,
                     }
                 );
             } else {
@@ -899,12 +979,24 @@ function cleanupLastFunctionMessage() {
 setInterval(periodicUpdateRepo, UPDATE_INTERVAL);
 periodicUpdateRepo();
 
-bot.launch().then(() => {
-    console.log('Bot launched successfully');
-}).catch(error => {
-    console.error('Failed to launch the bot:', error);
-});
+// Start the bot
+    bot.launch()
+    .then(() => console.log('Bot launched successfully'))
+    .catch(error => console.error('Failed to launch the bot:', error));
 
 // Enable graceful stop
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGINT', () => {
+    bot.stop('SIGINT');
+    console.log('Bot stopped with SIGINT');
+});
+
+process.once('SIGTERM', () => {
+    bot.stop('SIGTERM');
+    console.log('Bot stopped with SIGTERM');
+});
+
+process.on('SIGTERM', () => {
+console.log('SIGTERM signal received. Shutting down gracefully.');
+    bot.stop('SIGTERM received'); // Replace 'bot' with your bot instance variable
+    process.exit(0);
+});
