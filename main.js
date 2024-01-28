@@ -7,6 +7,8 @@ const path = require("path");
 const exec = require("child_process").exec;
 const https = require('https');
 const http = require('http');
+const dns = require('dns');
+
 
 const pageSize = 18;
 
@@ -22,9 +24,9 @@ const UPDATE_INTERVAL = STALE_HOURS * 3600000; // in milliseconds
 async function cloneOrUpdateRepo() {
     try {
         if (!fs.existsSync(REPO_DIR)) {
-            console.log(`Cloning repository: ${REPO_URL}`);
+            console.log(`[${new Date().toISOString()}] Cloning repository: ${REPO_URL}`);
             await execPromise(`git clone ${REPO_URL} ${REPO_DIR}`);
-            console.log('Repository cloned successfully.');
+            console.log(`[${new Date().toISOString()}] Repository cloned successfully.`);
         } else {
             const stats = fs.statSync(REPO_DIR);
             const hoursDiff = (new Date() - new Date(stats.mtime)) / 3600000;
@@ -45,9 +47,7 @@ async function cloneOrUpdateRepo() {
             }
         }
     } catch (error) {
-        console.log('Error in cloning or updating the repository:', error);
-        console.warn('Warning: Using old data due to update failure.');
-        // Use old data if the repository update fails
+        console.error(`[${new Date().toISOString()}] Error in cloning or updating the repository: ${error.message}`);
     }
 }
 
@@ -77,6 +77,8 @@ const expectedAction = {};
 // Function to start the bot interaction and show the chain selection menu
 async function startInteraction(ctx) {
     const userId = ctx.from.id;
+    console.log(`[${new Date().toISOString()}] User ${userId} started interaction.`);
+
     // Reset the user's session on /start command
     resetUserSession(userId);
 
@@ -132,47 +134,6 @@ async function getChainList(directory = REPO_DIR) {
     return directories.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
-// Function to check if an endpoint is healthy
-async function isEndpointHealthy(endpoint, isRpc) {
-    return new Promise((resolve) => {
-        const url = isRpc ? endpoint + '/status' : endpoint + '/cosmos/base/tendermint/v1beta1/blocks/latest';
-        const protocol = endpoint.startsWith('https') ? https : http;
-
-        protocol.get(url, (resp) => {
-            let data = '';
-
-            // A chunk of data has been received.
-            resp.on('data', (chunk) => {
-                data += chunk;
-            });
-
-            // The whole response has been received.
-            resp.on('end', () => {
-                try {
-                    const jsonData = JSON.parse(data);
-                    let latestBlockTime;
-
-                    if (isRpc) {
-                        // Handle RPC response structure
-                        latestBlockTime = jsonData.result ? new Date(jsonData.result.sync_info.latest_block_time) : new Date(jsonData.sync_info.latest_block_time);
-                    } else {
-                        // Handle REST response structure
-                        latestBlockTime = new Date(jsonData.block.header.time);
-                    }
-
-                    const now = new Date();
-                    resolve(now - latestBlockTime < 60000); // true if less than 1 minute old
-                } catch (e) {
-                    resolve(false);
-                }
-            });
-        }).on("error", (err) => {
-            console.log("Error: " + err.message);
-            resolve(false);
-        });
-    });
-}
-
 async function getTestnetsList() {
     // Assuming testnets is a directory inside REPO_DIR
     const testnetsDir = path.join(REPO_DIR, 'testnets');
@@ -187,6 +148,109 @@ async function getTestnetsList() {
 
     return directories.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
+
+const unhealthyEndpoints = new Set(); // Keep track of endpoints that are down
+
+// Helper function to perform a simple DNS lookup to check if the host is reachable.
+function isHostReachable(hostname) {
+  return new Promise((resolve) => {
+    dns.lookup(hostname, (err) => {
+      if (err) {
+        console.error(`DNS lookup failed for host: ${hostname}, Error: ${err.message}`);
+        resolve(false);
+      } else {
+        resolve(true);
+      }
+    });
+  });
+}
+
+async function isEndpointHealthy(endpoint, isRpc) {
+  // Immediately skip if endpoint starts with 'http://'
+  if (endpoint.startsWith('http://') || unhealthyEndpoints.has(endpoint)) {
+    console.log(`Skipping health check for endpoint with non-secure protocol or known to be unhealthy: ${endpoint}`);
+    return false;
+  }
+
+  // Extract hostname without protocol for reachability check
+  const hostname = new URL(endpoint).hostname;
+
+  // Check if the host is reachable
+  const isReachable = await isHostReachable(hostname);
+  if (!isReachable) {
+    console.log(`Host ${hostname} is not reachable.`);
+    unhealthyEndpoints.add(endpoint);
+    return false;
+  }
+
+  // Construct the correct URL avoiding double slashes
+  const basePath = isRpc ? '/status' : '/cosmos/base/tendermint/v1beta1/blocks/latest';
+  const url = new URL(basePath, endpoint.replace(/([^:]\/)\/+/g, "$1")).href; // Regex to replace double slashes except after the colon of http:
+
+  const protocol = endpoint.startsWith('https') ? https : http;
+  const requestTimeout = 5000; // Reduced timeout
+
+  return new Promise((resolve) => {
+    const request = protocol.get(url, (resp) => {
+      let data = '';
+
+      resp.on('data', (chunk) => {
+        data += chunk;
+      });
+
+      resp.on('end', () => {
+        try {
+          const jsonData = JSON.parse(data);
+          let latestBlockTimeString;
+
+          if (isRpc) {
+            latestBlockTimeString = jsonData.result?.sync_info?.latest_block_time || jsonData.sync_info?.latest_block_time;
+          } else {
+            latestBlockTimeString = jsonData.block?.header?.time;
+          }
+
+          if (!latestBlockTimeString) {
+            console.error(`Failed to find block time in the response from ${endpoint}`);
+            unhealthyEndpoints.add(endpoint);
+            resolve(false);
+            return;
+          }
+
+          const latestBlockTime = new Date(latestBlockTimeString);
+          const now = new Date();
+          const timeDiff = now - latestBlockTime;
+
+          resolve(timeDiff < 60000); // true if less than 60 seconds old
+        } catch (e) {
+          console.error(`Error parsing JSON response from ${endpoint}: ${e.message}`);
+          unhealthyEndpoints.add(endpoint);
+          resolve(false);
+        }
+      });
+    }).on("error", (err) => {
+      console.error(`Error with endpoint ${endpoint}: ${err.message}`);
+      unhealthyEndpoints.add(endpoint);
+      resolve(false);
+    });
+
+    request.setTimeout(requestTimeout, () => {
+      request.abort();
+      console.error(`Request to endpoint ${endpoint} timed out`);
+      unhealthyEndpoints.add(endpoint);
+      resolve(false);
+    });
+  });
+}
+
+// When an endpoint recovers, remove it from the unhealthy set
+function recoverEndpoint(endpoint) {
+    unhealthyEndpoints.delete(endpoint);
+}
+
+// Periodically clear the unhealthy endpoints set
+setInterval(() => {
+    unhealthyEndpoints.clear();
+}, 60000); // Clear every minute
 
 async function chainInfo(ctx, chain) {
     try {
@@ -207,7 +271,8 @@ async function chainInfo(ctx, chain) {
 
             async function findHealthyEndpoint(endpoints, isRpc) {
                 for (const endpoint of endpoints) {
-                    const healthy = await isEndpointHealthy(endpoint.address, isRpc);
+                    const healthy = await isEndpointHealthy(endpoint.address, isRpc, ctx);
+
                     if (healthy) {
                         return endpoint.address;
                     }
@@ -252,21 +317,20 @@ async function chainInfo(ctx, chain) {
                     return a.compareUrl.localeCompare(b.compareUrl);
                 });
 
-            // Return the preferred explorer
             return sortedExplorers.length > 0 ? sortedExplorers[0].url : "Unknown";
         }
 
-        const blockExplorerUrl = findPreferredExplorer(chainData.explorers) || "Unknown";
+       const blockExplorerUrl = findPreferredExplorer(chainData.explorers) || "Unknown";
 
-       const message = `Chain ID: \`${chainData.chain_id}\`\n` +
-               `Chain Name: \`${chainData.chain_name}\`\n` +
-               `RPC: \`${rpcAddress}\`\n` +
-               `REST: \`${restAddress}\`\n` +
-               `Address Prefix: \`${chainData.bech32_prefix}\`\n` +
-               `Base Denom: \`${baseDenom}\`\n` +
-               `Cointype: \`${chainData.slip44}\`\n` +
-               `Decimals: \`${decimals}\`\n` +
-               `Block Explorer: \`${blockExplorerUrl}\``;
+        const message = `Chain ID: \`${chainData.chain_id}\`\n` +
+            `Chain Name: \`${chainData.chain_name}\`\n` +
+            `RPC: \`${rpcAddress}\`\n` +
+            `REST: \`${restAddress}\`\n` +
+            `Address Prefix: \`${chainData.bech32_prefix}\`\n` +
+            `Base Denom: \`${baseDenom}\`\n` +
+            `Cointype: \`${chainData.slip44}\`\n` +
+            `Decimals: \`${decimals}\`\n` +
+            `Block Explorer: \`${blockExplorerUrl}\``;
 
         // Return an object with both message and data
         return {
@@ -278,12 +342,13 @@ async function chainInfo(ctx, chain) {
             }
         };
     } catch (error) {
-        console.log(`Error fetching data for ${chain}:`, error.stack);
-        return `Error fetching data for ${chain}: ${error.message}. Please contact developer or open an issue on GitHub.`;
+        console.error(`[${new Date().toISOString()}] Error fetching data for ${chain}: ${error.stack}`);
+        return `Error fetching data for ${chain}: ${error.message}. Please contact the developer or open an issue on GitHub.`;
     }
 }
 
 async function chainEndpoints(ctx, chain) {
+    console.log(`[${new Date().toISOString()}] Fetching endpoints for ${chain}`);
     try {
         const userId = ctx.from.id;
         const userAction = userLastAction[userId];
@@ -338,7 +403,7 @@ async function chainEndpoints(ctx, chain) {
             await ctx.replyWithMarkdown(response);
         }
     } catch (error) {
-        console.error(`Error fetching endpoints for ${chain}:`, error);
+        console.error(`[${new Date().toISOString()}] Error fetching endpoints for ${chain}: ${error.message}`);
         await ctx.reply(`Error fetching endpoints for ${chain}. Please try again.`);
     }
 }
@@ -539,9 +604,10 @@ async function handleMainMenuAction(ctx, action, chain) {
                     } else {
                         await ctx.replyWithMarkdown(chainEndpointsMessage);
                     }
-                 }; // else {
-           // console.error('Error: Endpoints data is unexpectedly empty.');
-               // }
+                } else {
+                    console.error('Error: Endpoints data is unexpectedly empty.');
+                    await ctx.reply('Error fetching endpoints data. Please try again.');
+                }
                 break;
             case 'block_explorers':
                 const blockExplorersMessage = await chainBlockExplorers(ctx, userAction.chain);
