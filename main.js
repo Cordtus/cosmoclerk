@@ -135,7 +135,8 @@ async function getChainList(directory = REPO_DIR) {
 // Function to check if an endpoint is healthy
 async function isEndpointHealthy(endpoint) {
     return new Promise((resolve) => {
-        https.get(endpoint + '/status', (resp) => {
+        const protocol = endpoint.startsWith('https') ? https : http;
+        protocol.get(endpoint + '/status', (resp) => {
             let data = '';
 
             // A chunk of data has been received.
