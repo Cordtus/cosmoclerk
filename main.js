@@ -20,25 +20,35 @@ const STALE_HOURS = 6;
 const UPDATE_INTERVAL = STALE_HOURS * 3600000; // in milliseconds
 
 async function cloneOrUpdateRepo() {
-        try {
-                if (!fs.existsSync(REPO_DIR)) {
-                        console.log(`Cloning repository: ${REPO_URL}`);
-                        await execPromise(`git clone ${REPO_URL} ${REPO_DIR}`);
-                        console.log('Repository cloned successfully.');
-                } else {
-                        const stats = fs.statSync(REPO_DIR);
-                        const hoursDiff = (new Date() - new Date(stats.mtime)) / 3600000;
-                        if (hoursDiff > STALE_HOURS) {
-                                console.log(`Updating repository in ${REPO_DIR}`);
-                                await execPromise(`git -C ${REPO_DIR} pull`);
-                                console.log('Repository updated successfully.');
-                        }
+    try {
+        if (!fs.existsSync(REPO_DIR)) {
+            console.log(`Cloning repository: ${REPO_URL}`);
+            await execPromise(`git clone ${REPO_URL} ${REPO_DIR}`);
+            console.log('Repository cloned successfully.');
+        } else {
+            const stats = fs.statSync(REPO_DIR);
+            const hoursDiff = (new Date() - new Date(stats.mtime)) / 3600000;
+            if (hoursDiff > STALE_HOURS) {
+                try {
+                    console.log(`Updating repository in ${REPO_DIR}`);
+                    await execPromise(`git -C ${REPO_DIR} pull`);
+                    console.log('Repository updated successfully.');
+                } catch (updateError) {
+                    console.log('Error updating repository, attempting to reset:', updateError);
+
+                    // Reset the local branch to match the remote repository
+                    await execPromise(`git -C ${REPO_DIR} fetch --all`);
+                    await execPromise(`git -C ${REPO_DIR} reset --hard origin/master`);
+                    await execPromise(`git -C ${REPO_DIR} pull`);
+                    console.log('Repository reset and updated successfully.');
                 }
-        } catch (error) {
-                console.log('Error in cloning or updating the repository:', error);
-                console.warn('Warning: Using old data due to update failure.');
-                // Use old data if the repository update fails
+            }
         }
+    } catch (error) {
+        console.log('Error in cloning or updating the repository:', error);
+        console.warn('Warning: Using old data due to update failure.');
+        // Use old data if the repository update fails
+    }
 }
 
 async function periodicUpdateRepo() {
@@ -123,8 +133,9 @@ async function getChainList() {
     return directories.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
 
-async function chainInfo(chain) {
+async function chainInfo(ctx, chain) {
     try {
+        const userId = ctx.from.id;
         const assetListPath = path.join(REPO_DIR, `${chain}/assetlist.json`);
         const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
 
@@ -178,7 +189,7 @@ async function chainInfo(chain) {
 
         const blockExplorerUrl = findPreferredExplorer(chainData.explorers) || "Unknown";
 
-        const message = `Chain ID: \`${chainData.chain_id}\`\n` +
+       const message = `Chain ID: \`${chainData.chain_id}\`\n` +
                `Chain Name: \`${chainData.chain_name}\`\n` +
                `RPC: \`${rpcAddress}\`\n` +
                `REST: \`${restAddress}\`\n` +
@@ -203,40 +214,81 @@ async function chainInfo(chain) {
     }
 }
 
-async function chainEndpoints(chain) {
+async function chainEndpoints(ctx, chain) {
     try {
         const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
         const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
 
-const formatEndpoints = (services, title, maxEndpoints) => {
-    if (!services || services.length === 0) return '';
-    const limitedServices = services.slice(0, maxEndpoints);
-    return `${title}\n-----------\n${limitedServices.map(service => {
-        // Replace non-alphanumeric and non-punctuation characters with an empty string
-        const provider = service.provider.replace(/[^\w\s.-]/g, '');
-        // Replace periods with underscores
-        const sanitizedProvider = provider.replace(/\./g, '_');
-        // Format the address with backticks
-        const address = `\`${service.address}\``;
-        return `  ${sanitizedProvider}:\n${address}\n`;
-    }).join("\n")}\n\n`;
-};
+        const formatService = (service) => {
+            // Bold format for provider and escape underscores
+            const provider = `*${service.provider.replace(/[^\w\s.-]/g, '').replace(/\./g, '_')}*`;
+            // Enclose address in backticks and escape underscores
+            const address = `\`${service.address.replace(/\/$/, '').replace(/_/g, '\\_')}\``;
+            return `${provider}:\n${address}\n`;
+        };
+
+        const formatEndpoints = (services, title, maxEndpoints) => {
+            if (!services || services.length === 0) {
+                return `*${title}*\nNo data available\n`;
+            }
+            const formattedServices = services.slice(0, maxEndpoints).map(formatService).join("\n");
+            return `*${title}*\n${'-'.repeat(title.length)}\n${formattedServices}\n`;
+        };
 
         const maxEndpointsPerService = 5;
-        const rpcEndpoints = formatEndpoints(chainData.apis.rpc, "RPC", maxEndpointsPerService);
-        const restEndpoints = formatEndpoints(chainData.apis.rest, "API", maxEndpointsPerService);
-        const grpcEndpoints = formatEndpoints(chainData.apis.grpc, "GRPC", maxEndpointsPerService);
-        const evmHttpJsonRpcEndpoints = formatEndpoints(chainData.apis['evm-http-jsonrpc'], "EVM-HTTP-JSONRPC", maxEndpointsPerService);
+        let responseSections = [];
+        responseSections.push(formatEndpoints(chainData.apis.rpc, "RPC", maxEndpointsPerService));
+        responseSections.push(formatEndpoints(chainData.apis.rest, "REST", maxEndpointsPerService));
+        responseSections.push(formatEndpoints(chainData.apis.grpc, "GRPC", maxEndpointsPerService));
 
-        return `${rpcEndpoints}${restEndpoints}${grpcEndpoints}${evmHttpJsonRpcEndpoints}`;
+        if (chainData.apis['evm-http-jsonrpc']) {
+            responseSections.push(formatEndpoints(chainData.apis['evm-http-jsonrpc'], "EVM-HTTP-JSONRPC", maxEndpointsPerService));
+        }
+
+        // Combine all sections into one response
+        const response = responseSections.join("\n\n").trim();
+
+        // Log the complete response and the length for debugging
+        console.log('Final formatted response:', response);
+        console.log('Response length:', response.length);
+
+        // Send the response in parts if it's too long
+        if (response.length > 4096) {
+            console.log('Response is too long, sending in parts.');
+            const parts = splitIntoParts(response, 4000); // Helper function needed to split the message
+            for (const part of parts) {
+                await ctx.replyWithMarkdown(part);
+            }
+        } else {
+            await ctx.replyWithMarkdown(response);
+        }
     } catch (error) {
-        console.log(`Error fetching endpoints for ${chain}:`, error.message);
-        return `Error fetching endpoints for ${chain}. Please ensure the chain name is correct and try again.`;
+        console.error(`Error fetching endpoints for ${chain}:`, error);
+        await ctx.reply(`Error fetching endpoints for ${chain}. Please try again.`);
     }
 }
 
-async function chainPeerNodes(chain) {
+// Helper function to split a long message into parts
+function splitIntoParts(str, maxLength) {
+    const parts = [];
+    let currentPart = '';
+    str.split('\n').forEach(line => {
+        if ((currentPart + line).length <= maxLength) {
+            currentPart += line + '\n';
+        } else {
+            parts.push(currentPart);
+            currentPart = line + '\n';
+        }
+    });
+    if (currentPart) {
+        parts.push(currentPart);
+    }
+    return parts;
+}
+
+async function chainPeerNodes(ctx, chain) {
     try {
+        const userId = ctx.from.id;
         const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
         const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
 
@@ -247,14 +299,15 @@ async function chainPeerNodes(chain) {
         };
 
         const formatPeers = (peers, title) => {
-            if (!peers || peers.length === 0) return `*${title}*\n---------------------\nNo data available\n\n`;
+            if (!peers || peers.length === 0) return `*${title}*\nNo data available\n\n`;
             const formattedPeers = peers.map(peer => {
                 const provider = `*${sanitizeProvider(peer.provider)}*`;
                 const id = peer.id ? `id: \`${peer.id}\`` : 'id: unavailable';
                 const address = peer.address ? `URL: \`${peer.address}\`` : 'URL: unavailable';
-                return `\n${provider}:\n---------------------\n ${id}\n ${address}`;
+                return `\n${provider}:\n ${id}\n ${address}`;
             }).join("\n");
-            return `*${title}*\n---------------------\n${formattedPeers}\n\n`;
+           return `*${title}*\n${'-'.repeat(title.length)}\n${formattedPeers}\n\n`;
+
         };
 
         const seedsHeader = "Seed Nodes";
@@ -269,13 +322,23 @@ async function chainPeerNodes(chain) {
     }
 }
 
-async function chainBlockExplorers(chain) {
+function sanitizeUrl(url) {
+    // Escape special MarkdownV2 characters
+    return url.replace(/[()]/g, '\\$&'); // Add more characters if needed
+}
+
+async function chainBlockExplorers(ctx, chain) {
     try {
         const chainJsonPath = path.join(REPO_DIR, `${chain}/chain.json`);
         const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
-
+        
         const explorersList = chainData.explorers
-            .map(explorer => `*${explorer.kind.replace(/\./g, '_')}*\n____________________\n${explorer.url}\n`)
+            .map(explorer => {
+        const name = `*${explorer.kind.replace(/[^\w\s.-]/g, '').replace(/\./g, '_')}*`;
+        // Enclose address in backticks and escape underscores
+        const url = `\`${explorer.url.replace(/\/$/, '').replace(/_/g, '\\_')}\``;
+        return `${name}:\n${url}\n`;
+            })
             .join('\n');
         return explorersList;
     } catch (error) {
@@ -322,66 +385,129 @@ function formatPoolIncentivesResponse(data) {
     }
 
     let response = '';
+    const currentDate = new Date(); // Get the current date
 
-    // Filter out entries from 1970 and with a duration of 1 day, then sort by start time
+    // Filter out expired incentives and sort by start time
     const filteredAndSortedData = data.data
         .filter(incentive => {
             const startTime = new Date(incentive.start_time);
-            const numEpochs = parseInt(incentive.num_epochs_paid_over);
-            return startTime.getFullYear() !== 1970 && numEpochs !== 1;
+            const durationDays = parseInt(incentive.num_epochs_paid_over);
+            const endTime = new Date(startTime);
+            endTime.setDate(startTime.getDate() + durationDays); // Calculate end time
+
+            return startTime.getFullYear() !== 1970 && durationDays !== 1 && endTime > currentDate;
         })
         .sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
 
     // Check if the filtered data is empty
     if (filteredAndSortedData.length === 0) {
-        return 'No incentives available.';
+        return 'No current incentives available.';
     }
 
     // Format the response
     filteredAndSortedData.forEach((incentive) => {
         const startTime = new Date(incentive.start_time);
         const numEpochs = parseInt(incentive.num_epochs_paid_over);
-        const filledEpochs = parseInt(incentive.filled_epochs);
 
         response += `Start Time: ${startTime.toLocaleDateString()}\n`;
         response += `Duration: ${numEpochs} days\n`;
-        response += `Elapsed: ${filledEpochs} days\n`;
-
-        if (incentive.coins) {
-            incentive.coins.forEach((coin) => {
-                response += `Coin: ${coin.denom}, Amount: ${coin.amount}\n`;
-            });
-        }
-
-        response += '\n';
+        response += `Coin: ${incentive.coins.map(coin => `${coin.denom}, Amount: ${coin.amount}`).join('\n')}\n\n`;
     });
 
     return response;
 }
 
+// Function to handle main menu actions based on user selection
+async function handleMainMenuAction(ctx, action, chain) {
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
 
-function sendMainMenu(ctx, userId) {
-    // Start with the basic buttons that are always included
-    const mainMenuButtons = [
-        Markup.button.callback('Chain Info', 'chain_info'),
-        Markup.button.callback('Peer Nodes', 'peer_nodes'),
-        Markup.button.callback('Endpoints', 'endpoints'),
-        Markup.button.callback('Block Explorers', 'block_explorers'),
-        Markup.button.callback('IBC-ID', 'ibc_id')
-    ];
-
-    // Retrieve the last action for the user
-    const lastAction = userLastAction[userId];
-
-    // Conditionally add the 'Pool Incentives [non-sc]' button if the chain is 'Osmosis'
-    if (lastAction.chain === 'osmosis') {
-        mainMenuButtons.push(Markup.button.callback('Pool Incentives [non-sc]', 'pool_incentives'));
+    if (!userAction || !userAction.chain) {
+        await ctx.reply('No chain selected. Please select a chain first.');
+        return;
     }
 
-    // Return the keyboard markup
-    return Markup.inlineKeyboard(mainMenuButtons, {
-        columns: 2
-    });
+    try {
+        switch (action) {
+            case 'chain_info':
+                const chainInfoResult = await chainInfo(ctx, userAction.chain);
+                if (chainInfoResult && chainInfoResult.message) {
+                    await ctx.reply(chainInfoResult.message, {
+                        parse_mode: 'Markdown',
+                        disable_web_page_preview: true,
+                    });
+                } else {
+                    console.error('Unexpected result from chainInfo:', chainInfoResult);
+                    await ctx.reply('Failed to fetch chain info.');
+                }
+                break;
+            case 'peer_nodes':
+                const peerNodesMessage = await chainPeerNodes(ctx, userAction.chain);
+                await ctx.reply(peerNodesMessage, { parse_mode: 'Markdown' });
+                break;
+            case 'endpoints':
+                const chainEndpointsMessage = await chainEndpoints(ctx, userAction.chain);
+
+                // Check if the chainEndpointsMessage is not null or empty
+                if (chainEndpointsMessage && chainEndpointsMessage.trim() !== '') {
+                    // Check if the message length exceeds the Telegram limit
+                    if (chainEndpointsMessage.length > 4096) {
+                        const parts = splitIntoParts(chainEndpointsMessage, 4000);
+                        for (const part of parts) {
+                            await ctx.replyWithMarkdown(part);
+                        }
+                    } else {
+                        await ctx.replyWithMarkdown(chainEndpointsMessage);
+                    }
+                } else {
+                    console.error('Error: Endpoints data is unexpectedly empty.');
+                }
+                break;
+            case 'block_explorers':
+                const blockExplorersMessage = await chainBlockExplorers(ctx, userAction.chain);
+                await ctx.replyWithMarkdown(blockExplorersMessage);
+                break;
+            case 'ibc_id':
+                await ctx.reply(`Enter IBC denom for ${escapeMarkdown(userAction.chain)}:`, { parse_mode: 'Markdown' });
+                break;
+            case 'pool_incentives':
+                if (userAction.chain === 'osmosis') {
+                    await ctx.reply('Enter pool_id for osmosis (AMM pool-type only):');
+                    expectedAction[userId] = 'awaiting_pool_id';
+                } else {
+                    await ctx.reply('Pool incentives are only available for Osmosis.');
+                }
+                break;
+            default:
+                await ctx.reply('Invalid option selected. Please try again.');
+                break;
+        }
+    } catch (error) {
+        console.error(`Error handling action ${action}:`, error);
+        await ctx.reply(`An error occurred while processing your request: ${error.message}`);
+    }
+}
+
+// Utility function to escape Markdown special characters
+function escapeMarkdown(text) {
+    return text.replace(/[_*[\]()~`>#+-=|{}.!]/g, '\\$&');
+}
+
+function sendMainMenu(ctx, userId) {
+    const mainMenuButtons = [
+        Markup.button.callback('1. Chain Info', 'chain_info'),
+        Markup.button.callback('2. Peer Nodes', 'peer_nodes'),
+        Markup.button.callback('3. Endpoints', 'endpoints'),
+        Markup.button.callback('4. Block Explorers', 'block_explorers'),
+        Markup.button.callback('5. IBC-ID', 'ibc_id')
+    ];
+
+    const lastAction = userLastAction[userId];
+    if (lastAction && lastAction.chain === 'osmosis') {
+        mainMenuButtons.push(Markup.button.callback('6. Pool Incentives [non-sc]', 'pool_incentives'));
+    }
+
+    return Markup.inlineKeyboard(mainMenuButtons, { columns: 2 });
 }
 
 function paginateChains(chains, currentPage, userId, pageSize) {
@@ -443,16 +569,14 @@ process.on('SIGTERM', () => {
 bot.action(/^select_chain:(.+)$/, async (ctx) => {
     const chain = ctx.match[1];
     const userId = ctx.from.id;
-
     // Update the user's last action
     updateUserLastAction(userId, {
         chain: chain,
-        // Store messageId & chatId for future reference
         messageId: ctx.callbackQuery.message.message_id,
         chatId: ctx.callbackQuery.message.chat.id
     });
 
-    // Attempt to show the main menu for the selected chain
+    // Show the main menu for the selected chain
     try {
         const keyboardMarkup = sendMainMenu(ctx, userId);
         await ctx.editMessageText('Select an action:', {
@@ -464,16 +588,7 @@ bot.action(/^select_chain:(.+)$/, async (ctx) => {
         });
     } catch (error) {
         console.error('Error while trying to show main menu:', error);
-        // If the original message is not found, send a new message with the menu
-        if (error.description === 'Bad Request: message to edit not found') {
-            const keyboardMarkup = sendMainMenu(ctx, userId);
-            const sentMessage = await ctx.reply('Select an action:', keyboardMarkup);
-            // Update the last action with the new message details
-            updateUserLastAction(userId, {
-                messageId: sentMessage.message_id,
-                chatId: sentMessage.chat.id
-            });
-        }
+        // Handle error
     }
 });
 
@@ -501,8 +616,10 @@ bot.action('pool_incentives', async (ctx) => {
 bot.on('text', async (ctx) => {
     const text = ctx.message.text.trim();
     const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
 
-    // Check if expecting pool_id from user.
+    console.log(`Received text: ${text} from user: ${userId}`);
+
     if (expectedAction[userId] === 'awaiting_pool_id') {
         // Process pool_id input
         const poolId = parseInt(text, 10);
@@ -512,7 +629,6 @@ bot.on('text', async (ctx) => {
             await handlePoolIncentives(ctx, poolId);
             delete expectedAction[userId]; // Clear the expected action after handling
         }
-
     } else if (text === '/start') {
         // Reset/establish user session
         if (!userLastAction[userId]) {
@@ -520,46 +636,52 @@ bot.on('text', async (ctx) => {
         } else {
             console.log(`Session already exists for user ${userId}`);
         }
-        const chains = await getChainList();
-        const keyboard = paginateChains(chains, 0, userId, pageSize);
-        await ctx.reply('Select a chain:', keyboard);
+    } else if (!isNaN(text)) {
+        // Numeric input for menu selection
+        const optionIndex = parseInt(text) - 1;
+        const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives'];
+        console.log(`User selected menu option number: ${optionIndex + 1}`);
+        if (optionIndex >= 0 && optionIndex < mainMenuOptions.length) {
+            const action = mainMenuOptions[optionIndex];
+            console.log(`Mapped user input to action: ${action}`);
+            if (userAction && userAction.chain) {
+                await handleMainMenuAction(ctx, action, userAction.chain);
+            } else {
+                await ctx.reply('No chain selected. Please select a chain first.');
+            }
+        } else {
+            await ctx.reply('Invalid option number. Please try again.');
+        }
     } else if (text.startsWith('ibc/')) {
         const ibcHash = text.replace('ibc/', '');
-        const userAction = userLastAction[userId];
         console.log(`Processing IBC request for hash: ${ibcHash}, chain: ${userAction?.chain}`);
-
         if (userAction && userAction.chain) {
             // Retrieve chain info as object
             try {
-                const chainInfoResult = await chainInfo(userAction.chain);
-                console.log(`chainInfoResult: `, chainInfoResult);
-
+                const chainInfoResult = await chainInfo(ctx, userAction.chain);
+                console.log(`chainInfoResult: `, chainInfoResult.message);
                 if (chainInfoResult && chainInfoResult.data && chainInfoResult.data.restAddress) {
                     let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, ''); // Remove trailing slashes
-                const url = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`;
-                console.log(`Requesting URL: ${url}`);
-
-                https.get(url, (res) => {
-                    let data = '';
-
-                    res.on('data', (chunk) => {
-                        data += chunk;
+                    const url = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`;
+                    console.log(`Requesting URL: ${url}`);
+                    https.get(url, (res) => {
+                        let data = '';
+                        res.on('data', (chunk) => {
+                            data += chunk;
+                        });
+                        res.on('end', () => {
+                            try {
+                                const response = JSON.parse(data);
+                                ctx.reply(`IBC Denom Trace: \n${JSON.stringify(response.denom_trace, null, 2)}`);
+                            } catch (parseError) {
+                                console.error('Error parsing response:', parseError);
+                                ctx.reply('Error fetching IBC denom trace. Please try again.');
+                            }
+                        });
+                    }).on('error', (error) => {
+                        console.error('Error fetching IBC denom trace:', error);
+                        ctx.reply('Error fetching IBC denom trace. Please try again.');
                     });
-
-                    res.on('end', () => {
-                        try {
-                const response = JSON.parse(data);
-            ctx.reply(`IBC Denom Trace: \n${JSON.stringify(response.denom_trace, null, 2)}`);
-        } catch (parseError) {
-            console.error('Error parsing response:', parseError);
-            ctx.reply('Error fetching IBC denom trace. Please try again.');
-        }
-    });
-}).on('error', (error) => {
-    console.error('Error fetching IBC denom trace:', error);
-    ctx.reply('Error fetching IBC denom trace. Please try again.');
-});
-
                 } else {
                     ctx.reply('Error: REST address not found for the selected chain.');
                     console.log('REST address not found in chainInfoResult');
@@ -572,11 +694,17 @@ bot.on('text', async (ctx) => {
             ctx.reply('No chain selected. Please select a chain first.');
             console.log('No chain selected for user action');
         }
-    } else if (text.startsWith('pool/')) {
-        const poolId = text.replace('pool/', '');
-        await handlePoolIncentives(ctx, poolId);
     } else {
-        console.log(`Received text: ${text}`);
+        const chains = await getChainList();
+        if (chains.includes(text)) {
+            // Select chain as if user clicked the button
+            updateUserLastAction(userId, { chain: text });
+            const keyboardMarkup = sendMainMenu(ctx, userId);
+            await ctx.reply('Select an action:', keyboardMarkup);
+        } else {
+            // Fallback for unrecognized commands
+            await ctx.reply('Unrecognized command. Please try again or use the menu options.');
+        }
     }
 });
 
@@ -632,32 +760,24 @@ bot.action('chain_info', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        // Fetch new chain info
-        const chainInfoResult = await chainInfo(userAction.chain);
-
-        // Check if message content same after edit
-        if (chainInfoResult.message === ctx.callbackQuery.message.text) {
-            // If content same, don't edit message
-            return ctx.answerCbQuery('The chain information is already up to date.');
-        }
-
-        // Proceed with editing message if content changed
         try {
-            await ctx.editMessageText(chainInfoResult.message, {
-                parse_mode: 'Markdown',
-                disable_web_page_preview: true,
-            });
-        } catch (error) {
-            console.error('Error editing message:', error);
-
-            if (error.description.includes('message is not modified')) {
-                // Ignore or handle the redundant edit attempt
+    const chainInfoResult = await chainInfo(ctx, userAction.chain);
+    if (chainInfoResult && chainInfoResult.message) {
+        await ctx.reply(chainInfoResult.message, {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
+    });
             } else {
-
+                // If the result is not in expected format, log the error and reply with a message
+                console.error(`chainInfo did not return expected data:`, chainInfoResult);
+                await ctx.reply('An error occurred while fetching the chain information.');
             }
+        } catch (error) {
+            console.error('Error fetching chain info:', error);
+            await ctx.reply(`An error occurred while processing your request: ${error.message}`);
         }
     } else {
-        ctx.reply('No chain selected. Please select a chain first.');
+        await ctx.reply('No chain selected. Please select a chain first.');
     }
 });
 
@@ -665,22 +785,28 @@ bot.action('endpoints', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        const endpoints = await chainEndpoints(userAction.chain);
-        const formattedEndpoints = endpoints.replace(/_/g, '\\_'); // Escape underscores for Markdown
+            const endpoints = await chainEndpoints(ctx, userAction.chain);
+          
+        //    if (!endpoints || typeof endpoints !== 'string' || !endpoints.trim()) {
+          //      console.error(`Endpoints data is unexpectedly empty for chain ${userAction.chain}.`);
+         //       await ctx.reply('Error: Received unexpectedly empty data.');
+          //      return;
+            
 
+           // console.log('Formatted Endpoints:', endpoints);
         try {
             if (userAction.messageId) {
                 await ctx.telegram.editMessageText(
                     userAction.chatId,
                     userAction.messageId,
                     null,
-                    formattedEndpoints,
-                    { parse_mode: 'Markdown',
-                        disable_web_page_preview: true,
+                    endpoints,
+                    { parse_mode: 'Markdown', 
+                        disable_web_page_preview: true, 
                     }
                 );
             } else {
-                const sentMessage = await ctx.replyWithMarkdown(formattedEndpoints);
+                const sentMessage = await ctx.reply(endpoints, { parse_mode: 'Markdown'});
                 updateUserLastAction(userId, {
                     messageId: sentMessage.message_id,
                     chatId: sentMessage.chat.id
@@ -688,7 +814,7 @@ bot.action('endpoints', async (ctx) => {
             }
         } catch (error) {
             console.error('Error editing message:', error);
-            // Handle error, e.g., by sending new message
+            // Handle error by sending new message
         }
     } else {
         ctx.reply('No chain selected. Please select a chain first.');
@@ -699,7 +825,7 @@ bot.action('peer_nodes', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        const peer_nodes = await chainPeerNodes(userAction.chain);
+        const peer_nodes = await chainPeerNodes(ctx, userAction.chain);
 
         try {
             if (userAction.messageId) {
@@ -732,7 +858,7 @@ bot.action('block_explorers', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        const block_explorers = await chainBlockExplorers(userAction.chain);
+        const block_explorers = await chainBlockExplorers(ctx, userAction.chain);
 
         try {
             if (userAction.messageId) {
@@ -741,11 +867,10 @@ bot.action('block_explorers', async (ctx) => {
                     userAction.messageId,
                     null,
                     block_explorers,
-                    { parse_mode: 'Markdown',
-                        disable_web_page_preview: true, }
+                    { parse_mode: 'Markdown', disable_web_page_preview: true }
                 );
             } else {
-                const sentMessage = await ctx.reply(block_explorers, { disable_web_page_preview: true });
+                const sentMessage = await ctx.reply(block_explorers, { parse_mode: 'Markdown', disable_web_page_preview: true });
                 updateUserLastAction(userId, {
                     messageId: sentMessage.message_id,
                     chatId: sentMessage.chat.id
@@ -753,10 +878,10 @@ bot.action('block_explorers', async (ctx) => {
             }
         } catch (error) {
             console.error('Error editing message:', error);
-            // Handle error by sending new message
+            await ctx.reply('An error occurred while processing your request. Please try again.');
         }
     } else {
-        ctx.reply('No chain selected. Please select a chain first.');
+        await ctx.reply('No chain selected. Please select a chain first.');
     }
 });
 
