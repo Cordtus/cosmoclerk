@@ -133,10 +133,12 @@ async function getChainList(directory = REPO_DIR) {
 }
 
 // Function to check if an endpoint is healthy
-async function isEndpointHealthy(endpoint) {
+async function isEndpointHealthy(endpoint, isRpc) {
     return new Promise((resolve) => {
+        const url = isRpc ? endpoint + '/status' : endpoint + '/cosmos/base/tendermint/v1beta1/blocks/latest';
         const protocol = endpoint.startsWith('https') ? https : http;
-        protocol.get(endpoint + '/status', (resp) => {
+
+        protocol.get(url, (resp) => {
             let data = '';
 
             // A chunk of data has been received.
@@ -148,7 +150,16 @@ async function isEndpointHealthy(endpoint) {
             resp.on('end', () => {
                 try {
                     const jsonData = JSON.parse(data);
-                    const latestBlockTime = new Date(jsonData.result.sync_info.latest_block_time);
+                    let latestBlockTime;
+
+                    if (isRpc) {
+                        // Handle RPC response structure
+                        latestBlockTime = jsonData.result ? new Date(jsonData.result.sync_info.latest_block_time) : new Date(jsonData.sync_info.latest_block_time);
+                    } else {
+                        // Handle REST response structure
+                        latestBlockTime = new Date(jsonData.block.header.time);
+                    }
+
                     const now = new Date();
                     resolve(now - latestBlockTime < 60000); // true if less than 1 minute old
                 } catch (e) {
@@ -194,17 +205,19 @@ async function chainInfo(ctx, chain) {
         const nativeDenomExponent = assetData.assets[0]?.denom_units.slice(-1)[0];
         const decimals = nativeDenomExponent ? nativeDenomExponent.exponent : "Unknown";
 
-        async function findHealthyEndpoint(endpoints) {
-            for (const endpoint of endpoints) {
-                if (await isEndpointHealthy(endpoint.address)) {
-                    return endpoint.address;
+            async function findHealthyEndpoint(endpoints, isRpc) {
+                for (const endpoint of endpoints) {
+                    const healthy = await isEndpointHealthy(endpoint.address, isRpc);
+                    if (healthy) {
+                        return endpoint.address;
+                    }
                 }
+                return "Unknown"; // Return Unknown if no healthy endpoint found
             }
-            return "Unknown"; // Return Unknown if no healthy endpoint found
-        }
 
-        const rpcAddress = await findHealthyEndpoint(chainData.apis.rpc);
-        const restAddress = await findHealthyEndpoint(chainData.apis.rest);
+        const rpcAddress = await findHealthyEndpoint(chainData.apis.rpc, true); // For RPC
+        const restAddress = await findHealthyEndpoint(chainData.apis.rest, false); // For REST
+
         const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
 
         // Function to prefer explorer based on first character, ignoring URL prefixes
