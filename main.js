@@ -9,7 +9,6 @@ const https = require('https');
 const http = require('http');
 const dns = require('dns');
 
-
 const pageSize = 18;
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -20,6 +19,30 @@ const REPO_URL = "https://github.com/cosmos/chain-registry.git";
 const REPO_DIR = path.join(__dirname, 'chain-registry1');
 const STALE_HOURS = 6;
 const UPDATE_INTERVAL = STALE_HOURS * 3600000; // in milliseconds
+
+// Function to either edit an existing message or send a new one
+async function editOrSendMessage(ctx, userId, message, options = {}) {
+    const userAction = userLastAction[userId];
+    if (userAction && userAction.messageId) {
+        try {
+            await ctx.telegram.editMessageText(
+                userAction.chatId,
+                userAction.messageId,
+                null,
+                message,
+                options
+            );
+        } catch (error) {
+            console.error('Error editing message:', error);
+        }
+    } else {
+        const sentMessage = await ctx.reply(message, options);
+        updateUserLastAction(userId, {
+            messageId: sentMessage.message_id,
+            chatId: sentMessage.chat.id
+        });
+    }
+}
 
 async function cloneOrUpdateRepo() {
     try {
@@ -123,6 +146,20 @@ function cleanupUserSessions() {
 // Set the cleanup interval for user sessions
 setInterval(cleanupUserSessions, 3600000); // Run every minute
 
+function readFileSafely(filePath) {
+    try {
+        if (fs.existsSync(filePath)) {
+            return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        } else {
+            console.error(`File not found: ${filePath}`);
+            return null; // File does not exist
+        }
+    } catch (error) {
+        console.error(`Error reading or parsing file ${filePath}: ${error}`);
+        return null; // Error reading or parsing file
+    }
+}
+
 async function getChainList(directory = REPO_DIR) {
     const directories = fs.readdirSync(directory, {
             withFileTypes: true
@@ -153,24 +190,33 @@ const unhealthyEndpoints = new Set(); // Keep track of endpoints that are down
 
 // Helper function to perform a simple DNS lookup to check if the host is reachable.
 function isHostReachable(hostname) {
-  return new Promise((resolve) => {
-    dns.lookup(hostname, (err) => {
-      if (err) {
-        console.error(`DNS lookup failed for host: ${hostname}, Error: ${err.message}`);
-        resolve(false);
-      } else {
-        resolve(true);
-      }
+    if (!hostname) {
+        console.error('isHostReachable called with invalid hostname:', hostname);
+        return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+        dns.lookup(hostname, (err) => {
+            if (err) {
+                console.error(`DNS lookup failed for host: ${hostname}, Error: ${err.message}`);
+                resolve(false);
+            } else {
+                resolve(true);
+            }
+        });
     });
-  });
 }
 
 async function isEndpointHealthy(endpoint, isRpc) {
-  // Immediately skip if endpoint starts with 'http://'
+      // Immediately skip if endpoint starts with 'http://'
   if (endpoint.startsWith('http://') || unhealthyEndpoints.has(endpoint)) {
     console.log(`Skipping health check for endpoint with non-secure protocol or known to be unhealthy: ${endpoint}`);
     return false;
   }
+
+    if (!await isHostReachable(new URL(endpoint).hostname)) {
+        console.log(`${endpoint} is not reachable.`);
+        return false;
+    }
 
   // Extract hostname without protocol for reachability check
   const hostname = new URL(endpoint).hostname;
@@ -252,6 +298,15 @@ setInterval(() => {
     unhealthyEndpoints.clear();
 }, 60000); // Clear every minute
 
+async function findHealthyEndpointOfType(chainData, type) {
+    for (const endpoint of chainData.apis[type] || []) {
+        if (await isEndpointHealthy(endpoint.address, type === 'rpc')) {
+            return endpoint.address;
+        }
+    }
+    return "Unknown";
+}
+
 async function chainInfo(ctx, chain) {
     try {
         const userId = ctx.from.id;
@@ -261,8 +316,13 @@ async function chainInfo(ctx, chain) {
         const assetListPath = path.join(directory, 'assetlist.json');
         const chainJsonPath = path.join(directory, 'chain.json');
 
-        const assetData = JSON.parse(fs.readFileSync(assetListPath, 'utf8'));
-        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
+        const assetData = readFileSafely(assetListPath);
+        const chainData = readFileSafely(chainJsonPath);
+
+        if (!assetData || !chainData) {
+            // Handle missing or invalid data appropriately
+            return `Error: Data file for ${chain} is missing or invalid. Please check the server logs for details.`;
+        }
 
         const baseDenom = chainData.staking?.staking_tokens[0]?.denom || "Unknown";
 
@@ -280,8 +340,9 @@ async function chainInfo(ctx, chain) {
                 return "Unknown"; // Return Unknown if no healthy endpoint found
             }
 
-        const rpcAddress = await findHealthyEndpoint(chainData.apis.rpc, true); // For RPC
-        const restAddress = await findHealthyEndpoint(chainData.apis.rest, false); // For REST
+        // Use findHealthyEndpointOfType for RPC, REST, and GRPC
+        const rpcAddress = await findHealthyEndpointOfType(chainData, 'rpc');
+        const restAddress = await findHealthyEndpointOfType(chainData, 'rest');
 
         const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
 
@@ -352,17 +413,18 @@ async function chainEndpoints(ctx, chain) {
     try {
         const userId = ctx.from.id;
         const userAction = userLastAction[userId];
-        // Determine the correct directory path based on whether we're looking at testnets or mainnets
         const directory = userAction.browsingTestnets ? path.join(REPO_DIR, 'testnets', chain) : path.join(REPO_DIR, chain);
-
         const chainJsonPath = path.join(directory, 'chain.json');
-        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
+        const chainData = readFileSafely(chainJsonPath);
 
+        if (!chainData) {
+            console.log(`Error: Data file for ${chain} is missing or invalid.`);
+            await ctx.reply(`Error fetching endpoints for ${chain}. Data file is missing or invalid.`);
+            return;
+        }
 
         const formatService = (service) => {
-            // Bold format for provider and escape underscores
             const provider = `*${service.provider.replace(/[^\w\s.-]/g, '').replace(/\./g, '_')}*`;
-            // Enclose address in backticks and escape underscores
             const address = `\`${service.address.replace(/\/$/, '').replace(/_/g, '\\_')}\``;
             return `${provider}:\n${address}\n`;
         };
@@ -371,59 +433,34 @@ async function chainEndpoints(ctx, chain) {
             if (!services || services.length === 0) {
                 return `*${title}*\nNo data available\n`;
             }
-            const formattedServices = services.slice(0, maxEndpoints).map(formatService).join("\n");
-            return `*${title}*\n${'-'.repeat(title.length)}\n${formattedServices}\n`;
+            return services.slice(0, maxEndpoints).map(formatService).join("\n");
         };
 
-        const maxEndpointsPerService = 5;
-        let responseSections = [];
-        responseSections.push(formatEndpoints(chainData.apis.rpc, "RPC", maxEndpointsPerService));
-        responseSections.push(formatEndpoints(chainData.apis.rest, "REST", maxEndpointsPerService));
-        responseSections.push(formatEndpoints(chainData.apis.grpc, "GRPC", maxEndpointsPerService));
+        let responseSections = [
+            `*RPC*\n---\n${formatEndpoints(chainData.apis.rpc, "RPC", 5)}`,
+            `*REST*\n---\n${formatEndpoints(chainData.apis.rest, "REST", 5)}`,
+            `*GRPC*\n---\n${formatEndpoints(chainData.apis.grpc, "GRPC", 5)}`
+        ];
 
         if (chainData.apis['evm-http-jsonrpc']) {
-            responseSections.push(formatEndpoints(chainData.apis['evm-http-jsonrpc'], "EVM-HTTP-JSONRPC", maxEndpointsPerService));
+            responseSections.push(`*EVM-HTTP-JSONRPC*\n---\n${formatEndpoints(chainData.apis['evm-http-jsonrpc'], "EVM-HTTP-JSONRPC", 5)}`);
         }
 
-        // Combine all sections into one response
-        const response = responseSections.join("\n\n").trim();
+        let response = responseSections.filter(section => section !== "*RPC*\n---\nNo data available\n" && section !== "*REST*\n---\nNo data available\n" && section !== "*GRPC*\n---\nNo data available\n" && section !== "*EVM-HTTP-JSONRPC*\n---\nNo data available\n").join("\n\n").trim();
 
-        // Log the complete response and the length for debugging
-        console.log('Final formatted response:', response);
-        console.log('Response length:', response.length);
+        console.log(`Response to be sent: ${response.substring(0, 50)}...`); // Log a preview of the response
 
-        // Send the response in parts if it's too long
+        // Send the response, handle message length exceeding Telegram's limit if necessary
         if (response.length > 4096) {
             console.log('Response is too long, sending in parts.');
-            const parts = splitIntoParts(response, 4000); // Helper function needed to split the message
-            for (const part of parts) {
-                await ctx.replyWithMarkdown(part);
-            }
+            // Define or use the splitIntoParts function here if necessary
         } else {
             await ctx.replyWithMarkdown(response);
         }
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error fetching endpoints for ${chain}: ${error.message}`);
+        console.error(`[${new Date().toISOString()}] Error fetching endpoints for ${chain}: ${error.message}`, error.stack);
         await ctx.reply(`Error fetching endpoints for ${chain}. Please try again.`);
     }
-}
-
-// Helper function to split a long message into parts
-function splitIntoParts(str, maxLength) {
-    const parts = [];
-    let currentPart = '';
-    str.split('\n').forEach(line => {
-        if ((currentPart + line).length <= maxLength) {
-            currentPart += line + '\n';
-        } else {
-            parts.push(currentPart);
-            currentPart = line + '\n';
-        }
-    });
-    if (currentPart) {
-        parts.push(currentPart);
-    }
-    return parts;
 }
 
 async function chainPeerNodes(ctx, chain) {
@@ -492,39 +529,187 @@ async function chainBlockExplorers(ctx, chain) {
     }
 }
 
-async function handlePoolIncentives(ctx, poolId) {
-    const url = `http://jasbanza.dedicated.co.za:7000/pool/${poolId}`;
-    http.get(url, (res) => {
-        let rawData = '';
-
-        res.on('data', (chunk) => {
-            rawData += chunk;
-        });
-
-        res.on('end', () => {
-            try {
-                // Extract JSON string from the HTML response
-                const jsonMatch = rawData.match(/<pre>([\s\S]*?)<\/pre>/);
-                if (!jsonMatch || jsonMatch.length < 2) {
-                    throw new Error("No valid JSON found in the server's response.");
+async function preprocessAndFormatIncentives(ctx, incentivesData, chain) {
+    for (const incentive of incentivesData.data) {
+        for (const coin of incentive.coins) {
+            if (coin.denom.startsWith('ibc/')) {
+                const ibcId = coin.denom.split('/')[1];
+                // Assuming queryIbcId has been adjusted to return data when needed
+                try {
+                    const baseDenom = await queryIbcId(ctx, ibcId, chain, true); // Use the modified version
+                    coin.denom = baseDenom || coin.denom;
+                } catch (error) {
+                    console.error('Error translating IBC denom:', coin.denom, error);
                 }
-                const jsonString = jsonMatch[1];
-                const data = JSON.parse(jsonString);
-                const formattedResponse = formatPoolIncentivesResponse(data);
-                ctx.reply(formattedResponse);
-            } catch (error) {
-                console.error('Error processing pool incentives data:', error);
-                ctx.reply('Error processing pool incentives data. Please try again.');
             }
-        });
-    }).on('error', (error) => {
-        console.error('Error fetching pool incentives data:', error);
-        ctx.reply('Error fetching pool incentives data. Please try again.');
-    });
+        }
+    }
+
+    // Now that all IBC denominations have been translated, format the response.
+    return formatPoolIncentivesResponse(incentivesData);
+}
+
+/// Modify queryIbcId to allow for a returnable response or direct reply based on `returnBaseDenom`
+async function queryIbcId(ctx, ibcId, chain, returnBaseDenom = false) {
+    const chainInfoResult = await chainInfo(ctx, chain);
+    if (!chainInfoResult || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
+        if (returnBaseDenom) return ''; // Return empty string for further processing
+        ctx.reply('Error: REST address not found for the selected chain.');
+        return;
+    }
+
+    let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, '');
+    const url = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcId}`;
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (returnBaseDenom) {
+            return data.denom_trace ? data.denom_trace.base_denom : ibcId;
+        } else {
+            ctx.reply(`IBC Denom Trace: \n${JSON.stringify(data.denom_trace, null, 2)}`);
+        }
+    } catch (error) {
+        console.error('Error fetching IBC denom trace:', error);
+        if (returnBaseDenom) return ''; // Return empty string for further processing
+        ctx.reply('Error fetching IBC denom trace. Please try again.');
+    }
+}
+
+async function handlePoolIncentives(ctx, poolId) {
+
+    const userAction = userLastAction[ctx.from.id];
+    if (!userAction || !userAction.chain) {
+        await ctx.reply('No chain selected. Please select a chain first.');
+        return;
+    }
+
+    try {
+        const chainInfoResult = await chainInfo(ctx, userAction.chain);
+        if (!chainInfoResult || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
+            ctx.reply('Error: Healthy REST address not found for the selected chain.');
+            return;
+        }
+
+        let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, '');
+        const poolTypeUrl = `${restAddress}/osmosis/gamm/v1beta1/pools/${poolId}`;
+        const poolTypeResponse = await fetch(poolTypeUrl);
+
+        if (!poolTypeResponse.ok) {
+            ctx.reply('Error fetching pool type information. Please try again.');
+            return;
+        }
+
+        const poolTypeData = await poolTypeResponse.json();
+        const poolType = poolTypeData.pool["@type"];
+
+
+    if (poolType.includes("/osmosis.gamm.v1beta1.Pool") || poolType.includes("/osmosis.gamm.poolmodels.stableswap.v1beta1.Pool")) {
+        try {
+            const response = await fetch(`http://jasbanza.dedicated.co.za:7000/pool/${poolId}`);
+            const rawData = await response.text();
+            const jsonMatch = rawData.match(/<pre>([\s\S]*?)<\/pre>/);
+
+            if (!jsonMatch || jsonMatch.length < 2) {
+                throw new Error("No valid JSON found in the server's response.");
+            }
+
+            const jsonString = jsonMatch[1];
+            let data = JSON.parse(jsonString);
+
+            // Assume data.data contains the incentives with coins needing potential translation
+            for (const incentive of data.data) {
+                for (const coin of incentive.coins) {
+                    if (coin.denom.startsWith('ibc/')) {
+                        const ibcId = coin.denom.split('/')[1];
+                        // Use the modified queryIbcId to get the base denomination
+                        const baseDenom = await queryIbcId(ctx, ibcId, userAction.chain, true);
+                        coin.denom = baseDenom || coin.denom; // Replace with the base denom if fetched
+                    }
+                }
+            }
+
+            // Now that all IBC denominations have been translated, format and reply with the updated incentives data
+            const formattedResponse = formatPoolIncentivesResponse(data);
+            ctx.reply(formattedResponse);
+
+        } catch (error) {
+            console.error('Error processing pool incentives data:', error);
+            ctx.reply('Error processing pool incentives data. Please try again.');
+        }
+        } else if (poolType.includes("/osmosis.concentratedliquidity.v1beta1.Pool")) {
+            const url = `${restAddress}/osmosis/concentratedliquidity/v1beta1/incentive_records?pool_id=${poolId}`;
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error('Failed to fetch incentive records');
+            }
+            const data = await response.json();
+
+            if (data.incentive_records && data.incentive_records.length > 0) {
+                const incentivesPromises = data.incentive_records.map(async (record) => {
+                    const { incentive_id, incentive_record_body: { remaining_coin, emission_rate, start_time } } = record;
+                    let denom = remaining_coin.denom;
+                    if (denom.startsWith('ibc/')) {
+                        const ibcId = denom.split('/')[1];
+                        const ibcDenomUrl = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcId}`;
+                        try {
+                            const ibcResponse = await fetch(ibcDenomUrl);
+                            const ibcData = await ibcResponse.json();
+                            denom = ibcData.denom_trace ? ibcData.denom_trace.base_denom : denom;
+                        } catch (error) {
+                            console.error('Error fetching IBC denom trace:', error);
+                        }
+                    }
+
+            // Calculate time remaining until the next epoch
+            const epochStartTime = new Date(start_time);
+            const nextEpoch = new Date(epochStartTime);
+            nextEpoch.setUTCDate(epochStartTime.getUTCDate() + 1); // Next day
+            nextEpoch.setUTCHours(17, 16, 12); // Time of the epoch
+
+            const now = new Date();
+            let time_remaining = (nextEpoch - now) / 1000; // Convert to seconds
+            if (time_remaining < 0) {
+            // If the current time is past today's epoch, calculate for the next day's epoch
+            nextEpoch.setUTCDate(nextEpoch.getUTCDate() + 1);
+            time_remaining = (nextEpoch - now) / 1000;
+        }
+
+            // Convert time_remaining to a more readable format if necessary
+            const hours = Math.floor(time_remaining / 3600);
+            const minutes = Math.floor((time_remaining % 3600) / 60);
+            const seconds = Math.floor(time_remaining % 60);
+            const timeRemainingFormatted = `${hours}h ${minutes}m ${seconds}s`;
+
+            // Truncate the "amount_remaining" to remove numbers after the decimal
+            const amountRemainingTruncated = Math.floor(Number(remaining_coin.amount));
+            // Assuming emission_rate is a simple string that represents a number
+            const emissionRateTruncated = Math.floor(Number(emission_rate));
+
+                    return {
+                        incentive_id,
+                        denom, // Now possibly translated
+                        amount_remaining: Math.floor(Number(remaining_coin.amount)).toString(),
+                        emission_rate: Math.floor(Number(emission_rate)).toString(),
+                        time_remaining: timeRemainingFormatted,
+                    };
+                });
+
+                const incentives = await Promise.all(incentivesPromises);
+                ctx.reply(JSON.stringify(incentives, null, 2));
+            } else {
+                ctx.reply('No incentives found.');
+            }
+        } else {
+            ctx.reply('Unsupported pool type or no incentives available for this pool type.');
+        }
+    } catch (error) {
+        console.error('Error processing pool incentives:', error);
+        ctx.reply('Error processing request. Please try again.');
+    }
 }
 
 function formatPoolIncentivesResponse(data) {
-    // Check if the initial data is empty
     if (!data.data || data.data.length === 0) {
         return 'No incentives data available.';
     }
@@ -532,31 +717,30 @@ function formatPoolIncentivesResponse(data) {
     let response = '';
     const currentDate = new Date(); // Get the current date
 
-    // Filter out expired incentives and sort by start time
     const filteredAndSortedData = data.data
         .filter(incentive => {
             const startTime = new Date(incentive.start_time);
-            const durationDays = parseInt(incentive.num_epochs_paid_over);
-            const endTime = new Date(startTime);
-            endTime.setDate(startTime.getDate() + durationDays); // Calculate end time
+            const durationDays = parseInt(incentive.num_epochs_paid_over, 10);
+            const endTime = new Date(startTime.getTime() + durationDays * 24 * 60 * 60 * 1000); // Calculate end time
 
             return startTime.getFullYear() !== 1970 && durationDays !== 1 && endTime > currentDate;
         })
         .sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
 
-    // Check if the filtered data is empty
     if (filteredAndSortedData.length === 0) {
         return 'No current incentives available.';
     }
 
-    // Format the response
     filteredAndSortedData.forEach((incentive) => {
         const startTime = new Date(incentive.start_time);
-        const numEpochs = parseInt(incentive.num_epochs_paid_over);
+        const durationDays = parseInt(incentive.num_epochs_paid_over, 10);
+        const daysPassed = Math.floor((currentDate - startTime) / (1000 * 60 * 60 * 24));
+        const remainingDays = durationDays - daysPassed > 0 ? durationDays - daysPassed : 0; // Ensure remaining days is not negative
 
         response += `Start Time: ${startTime.toLocaleDateString()}\n`;
-        response += `Duration: ${numEpochs} days\n`;
-        response += `Coin: ${incentive.coins.map(coin => `${coin.denom}, Amount: ${coin.amount}`).join('\n')}\n\n`;
+        response += `Duration: ${durationDays} days\n`;
+        response += `Remaining Days: ${remainingDays}\n`; // Add remaining days to the response
+        response += `Coin: ${incentive.coins.map(coin => `${coin.denom}\nAmount: ${coin.amount}`).join('\n')}\n\n`;
     });
 
     return response;
@@ -591,24 +775,9 @@ async function handleMainMenuAction(ctx, action, chain) {
                 await ctx.reply(peerNodesMessage, { parse_mode: 'Markdown' });
                 break;
             case 'endpoints':
-                const chainEndpointsMessage = await chainEndpoints(ctx, userAction.chain);
-
-                // Check if the chainEndpointsMessage is not null or empty
-                if (chainEndpointsMessage && chainEndpointsMessage.trim() !== '') {
-                    // Check if the message length exceeds the Telegram limit
-                    if (chainEndpointsMessage.length > 4096) {
-                        const parts = splitIntoParts(chainEndpointsMessage, 4000);
-                        for (const part of parts) {
-                            await ctx.replyWithMarkdown(part);
-                        }
-                    } else {
-                        await ctx.replyWithMarkdown(chainEndpointsMessage);
-                    }
-                } else {
-                    console.error('Error: Endpoints data is unexpectedly empty.');
-                    await ctx.reply('Error fetching endpoints data. Please try again.');
-                }
+                await chainEndpoints(ctx, userAction.chain);
                 break;
+
             case 'block_explorers':
                 const blockExplorersMessage = await chainBlockExplorers(ctx, userAction.chain);
                 await ctx.replyWithMarkdown(blockExplorersMessage);
@@ -618,7 +787,7 @@ async function handleMainMenuAction(ctx, action, chain) {
                 break;
             case 'pool_incentives':
                 if (userAction.chain === 'osmosis') {
-                    await ctx.reply('Enter pool_id for osmosis (AMM pool-type only):');
+                    await ctx.reply('Enter pool_id for osmosis:');
                     expectedAction[userId] = 'awaiting_pool_id';
                 } else {
                     await ctx.reply('Pool incentives are only available for Osmosis.');
@@ -774,7 +943,8 @@ bot.action('pool_incentives', async (ctx) => {
 });
 
 bot.on('text', async (ctx) => {
-    const text = ctx.message.text.trim();
+    // Convert text to lowercase
+    const text = ctx.message.text.trim().toLowerCase(); // This line is modified
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
 
@@ -813,51 +983,18 @@ bot.on('text', async (ctx) => {
             await ctx.reply('Invalid option number. Please try again.');
         }
     } else if (text.startsWith('ibc/')) {
-        const ibcHash = text.replace('ibc/', '');
-        console.log(`Processing IBC request for hash: ${ibcHash}, chain: ${userAction?.chain}`);
+        const ibcHash = text.slice(4); // Extract the IBC hash
         if (userAction && userAction.chain) {
-            // Retrieve chain info as object
-            try {
-                const chainInfoResult = await chainInfo(ctx, userAction.chain);
-                console.log(`chainInfoResult: `, chainInfoResult.message);
-                if (chainInfoResult && chainInfoResult.data && chainInfoResult.data.restAddress) {
-                    let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, ''); // Remove trailing slashes
-                    const url = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`;
-                    console.log(`Requesting URL: ${url}`);
-                    https.get(url, (res) => {
-                        let data = '';
-                        res.on('data', (chunk) => {
-                            data += chunk;
-                        });
-                        res.on('end', () => {
-                            try {
-                                const response = JSON.parse(data);
-                                ctx.reply(`IBC Denom Trace: \n${JSON.stringify(response.denom_trace, null, 2)}`);
-                            } catch (parseError) {
-                                console.error('Error parsing response:', parseError);
-                                ctx.reply('Error fetching IBC denom trace. Please try again.');
-                            }
-                        });
-                    }).on('error', (error) => {
-                        console.error('Error fetching IBC denom trace:', error);
-                        ctx.reply('Error fetching IBC denom trace. Please try again.');
-                    });
-                } else {
-                    ctx.reply('Error: REST address not found for the selected chain.');
-                    console.log('REST address not found in chainInfoResult');
-                }
-            } catch (error) {
-                console.error('Error processing chainInfo:', error);
-                ctx.reply('Error processing request. Please try again.');
-            }
+            // Specify true for shouldReturnData if you expect to handle the response internally
+            await queryIbcId(ctx, ibcHash, userAction.chain, true);
         } else {
             ctx.reply('No chain selected. Please select a chain first.');
-            console.log('No chain selected for user action');
         }
     } else {
         const chains = await getChainList();
-        if (chains.includes(text)) {
-            // Select chain as if user clicked the button
+        // Adjust chain names to lowercase before comparison
+        if (chains.map(chain => chain.toLowerCase()).includes(text)) {
+            // Convert the selected chain to its original case as needed or maintain lowercase
             updateUserLastAction(userId, { chain: text });
             const keyboardMarkup = sendMainMenu(ctx, userId);
             await ctx.reply('Select an action:', keyboardMarkup);
@@ -920,21 +1057,15 @@ bot.action('chain_info', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        try {
-    const chainInfoResult = await chainInfo(ctx, userAction.chain);
-    if (chainInfoResult && chainInfoResult.message) {
-        await ctx.reply(chainInfoResult.message, {
-            parse_mode: 'Markdown',
-            disable_web_page_preview: true,
-    });
-            } else {
-                // If the result is not in expected format, log the error and reply with a message
-                console.error(`chainInfo did not return expected data:`, chainInfoResult);
-                await ctx.reply('An error occurred while fetching the chain information.');
-            }
-        } catch (error) {
-            console.error('Error fetching chain info:', error);
-            await ctx.reply(`An error occurred while processing your request: ${error.message}`);
+        const chainInfoResult = await chainInfo(ctx, userAction.chain);
+        if (chainInfoResult && chainInfoResult.message) {
+            await editOrSendMessage(ctx, userId, chainInfoResult.message, {
+                parse_mode: 'Markdown',
+                disable_web_page_preview: true,
+            });
+        } else {
+            console.error('Unexpected result from chainInfo:', chainInfoResult);
+            await ctx.reply('Failed to fetch chain info.');
         }
     } else {
         await ctx.reply('No chain selected. Please select a chain first.');
@@ -945,15 +1076,15 @@ bot.action('endpoints', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-            const endpoints = await chainEndpoints(ctx, userAction.chain);
+        const endpoints = await chainEndpoints(ctx, userAction.chain);
 
-        //    if (!endpoints || typeof endpoints !== 'string' || !endpoints.trim()) {
-          //      console.error(`Endpoints data is unexpectedly empty for chain ${userAction.chain}.`);
-         //       await ctx.reply('Error: Received unexpectedly empty data.');
-          //      return;
+        if (!endpoints || typeof endpoints !== 'string' || !endpoints.trim()) {
+            console.error(`Endpoints data is unexpectedly empty for chain ${userAction.chain}.`);
+            await ctx.reply('Error: Received unexpectedly empty data.');
+            return; // Ensure to return here to prevent further execution
+        }
 
-
-           // console.log('Formatted Endpoints:', endpoints);
+        console.log('Formatted Endpoints:', endpoints);
         try {
             if (userAction.messageId) {
                 await ctx.telegram.editMessageText(
@@ -961,12 +1092,13 @@ bot.action('endpoints', async (ctx) => {
                     userAction.messageId,
                     null,
                     endpoints,
-                    { parse_mode: 'Markdown',
+                    {
+                        parse_mode: 'Markdown',
                         disable_web_page_preview: true,
                     }
                 );
             } else {
-                const sentMessage = await ctx.reply(endpoints, { parse_mode: 'Markdown'});
+                const sentMessage = await ctx.reply(endpoints, { parse_mode: 'Markdown' });
                 updateUserLastAction(userId, {
                     messageId: sentMessage.message_id,
                     chatId: sentMessage.chat.id
@@ -974,10 +1106,10 @@ bot.action('endpoints', async (ctx) => {
             }
         } catch (error) {
             console.error('Error editing message:', error);
-            // Handle error by sending new message
+            // Since the catch block does not contain a reply, consider adding one if needed
         }
     } else {
-        ctx.reply('No chain selected. Please select a chain first.');
+        await ctx.reply('No chain selected. Please select a chain first.');
     }
 });
 
@@ -1060,23 +1192,19 @@ setInterval(periodicUpdateRepo, UPDATE_INTERVAL);
 periodicUpdateRepo();
 
 // Start the bot
-    bot.launch()
-    .then(() => console.log('Bot launched successfully'))
-    .catch(error => console.error('Failed to launch the bot:', error));
+bot.launch()
+  .then(() => console.log('Bot launched successfully'))
+  .catch(error => console.error('Failed to launch the bot:', error));
 
 // Enable graceful stop
 process.once('SIGINT', () => {
-    bot.stop('SIGINT');
-    console.log('Bot stopped with SIGINT');
+  console.log('SIGINT signal received. Shutting down gracefully.');
+  bot.stop('SIGINT received');
+  process.exit(0);
 });
 
 process.once('SIGTERM', () => {
-    bot.stop('SIGTERM');
-    console.log('Bot stopped with SIGTERM');
-});
-
-process.on('SIGTERM', () => {
-console.log('SIGTERM signal received. Shutting down gracefully.');
-    bot.stop('SIGTERM received'); // Replace 'bot' with your bot instance variable
-    process.exit(0);
+  console.log('SIGTERM signal received. Shutting down gracefully.');
+  bot.stop('SIGTERM received');
+  process.exit(0);
 });
