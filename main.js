@@ -982,15 +982,21 @@ bot.on('text', async (ctx) => {
         } else {
             await ctx.reply('Invalid option number. Please try again.');
         }
-    } else if (text.startsWith('ibc/')) {
-        const ibcHash = text.slice(4); // Extract the IBC hash
-        if (userAction && userAction.chain) {
-            // Specify true for shouldReturnData if you expect to handle the response internally
-            await queryIbcId(ctx, ibcHash, userAction.chain, true);
+        // Within bot.on('text', async (ctx) => { ... })
+        } else if (text.startsWith('ibc/')) {
+            const ibcHash = text.slice(4); // Extract the IBC hash
+            if (userAction && userAction.chain) {
+            const baseDenom = await queryIbcId(ctx, ibcHash, userAction.chain, true);
+            if (baseDenom) {
+            ctx.reply(`Base Denomination: ${baseDenom}`);
+            } else {
+            ctx.reply('Failed to fetch IBC denom trace or it does not exist.');
+        }
         } else {
             ctx.reply('No chain selected. Please select a chain first.');
         }
-    } else {
+}
+ else {
         const chains = await getChainList();
         // Adjust chain names to lowercase before comparison
         if (chains.map(chain => chain.toLowerCase()).includes(text)) {
