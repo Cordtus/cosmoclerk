@@ -796,7 +796,16 @@ async function handleMainMenuAction(ctx, action, chain) {
             default:
                 await ctx.reply('Invalid option selected. Please try again.');
                 break;
-        }
+            case 'pool_info':
+                if (userAction.chain === 'osmosis') {
+                    await ctx.reply('Enter pool_id for Osmosis:');
+                    expectedAction[userId] = 'awaiting_pool_id_info';
+                } else {
+                    await ctx.reply('Pool info is only available for Osmosis.');
+                }
+                break;
+
+                    }
     } catch (error) {
         console.error(`Error handling action ${action}:`, error);
         await ctx.reply(`An error occurred while processing your request: ${error.message}`);
