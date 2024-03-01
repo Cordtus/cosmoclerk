@@ -108,7 +108,7 @@ async function startInteraction(ctx) {
     // Retrieve the chain list and generate paginated chain list
     const chains = await getChainList();
     const keyboard = paginateChains(chains, 0, userId, pageSize);
-    ctx.reply('Select a chain:', keyboard);
+    ctx.reply('Type a chain name, or select from menu:', keyboard);
 }
 
 bot.start(async (ctx) => {
@@ -803,7 +803,71 @@ async function handleMainMenuAction(ctx, action, chain) {
     }
 }
 
-// Utility function to escape Markdown special characters
+async function handlePoolInfo(ctx, poolId) {
+    const userAction = userLastAction[ctx.from.id];
+    if (!userAction || userAction.chain !== 'osmosis') {
+        await ctx.reply('The "Pool Info" feature is only available for the Osmosis chain.');
+        return;
+    }
+
+    try {
+        const chainInfoResult = await chainInfo(ctx, userAction.chain);
+        if (!chainInfoResult || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
+            ctx.reply('Error: Healthy REST address not found for the selected chain.');
+            return;
+        }
+
+        let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, '');
+        const poolTypeUrl = `${restAddress}/osmosis/gamm/v1beta1/pools/${poolId}`;
+        const response = await fetch(poolTypeUrl);
+        if (!response.ok) {
+            throw new Error('Error fetching pool information.');
+        }
+        const poolData = await response.json();
+        const poolType = poolData.pool["@type"];
+        const formattedResponse = await formatPoolInfoResponse(ctx, poolData, userAction.chain);
+        ctx.reply(formattedResponse);
+    } catch (error) {
+        console.error('Error fetching pool info:', error);
+        ctx.reply('Error fetching pool information. Please try again.');
+    }
+}
+
+async function formatPoolInfoResponse(ctx, poolData, chain) {
+    let formattedResponse = '';
+    const poolType = poolData.pool["@type"];
+
+    if (poolType.includes("/osmosis.gamm.v1beta1.Pool") || poolType.includes("/osmosis.gamm.poolmodels.stableswap.v1beta1.Pool")) {
+        // Gamm pool formatting
+        formattedResponse += `Pool Type: Gamm Pool\n`;
+        formattedResponse += `ID: ${poolData.pool.id}\n`;
+        formattedResponse += `Address: ${poolData.pool.address}\n`;
+        formattedResponse += `Swap Fee: ${poolData.pool.pool_params.swap_fee}\n`;
+        formattedResponse += `Exit Fee: ${poolData.pool.pool_params.exit_fee}\n`;
+
+        for (const asset of poolData.pool.pool_assets) {
+            const baseDenom = await queryIbcId(ctx, asset.token.denom.split('/')[1], chain, true);
+            formattedResponse += `Token: ${baseDenom || asset.token.denom}\n`;
+        }
+    } else if (poolType.includes("/osmosis.concentratedliquidity.v1beta1.Pool")) {
+        // Concentrated liquidity pool formatting
+        formattedResponse += `Pool Type: Concentrated Liquidity Pool\n`;
+        formattedResponse += `ID: ${poolData.pool.id}\n`;
+        formattedResponse += `Address: ${poolData.pool.address}\n`;
+        formattedResponse += `Swap Fee: ${poolData.pool.spread_factor}\n`;
+
+        const tokens = [poolData.pool.token0, poolData.pool.token1];
+        for (const token of tokens) {
+            const baseDenom = await queryIbcId(ctx, token.split('/')[1], chain, true);
+            formattedResponse += `Token: ${baseDenom || token}\n`;
+        }
+    } else {
+        formattedResponse = 'Unsupported pool type or format.';
+    }
+
+    return formattedResponse;
+}
+
 function sendMainMenu(ctx, userId) {
     const userAction = userLastAction[userId];
     const mainMenuButtons = [
@@ -817,12 +881,15 @@ function sendMainMenu(ctx, userId) {
     if (!userAction.browsingTestnets) {
         mainMenuButtons.push(Markup.button.callback('5. IBC-ID', 'ibc_id'));
         if (userAction.chain === 'osmosis') {
-            mainMenuButtons.push(Markup.button.callback('6. Pool Incentives [non-sc]', 'pool_incentives'));
+            mainMenuButtons.push(Markup.button.callback('6. Pool Incentives', 'pool_incentives'));
+            // Add the new button for Pool Info here
+            mainMenuButtons.push(Markup.button.callback('7. Pool Info', 'pool_info'));
         }
     }
 
     return Markup.inlineKeyboard(mainMenuButtons, { columns: 2 });
 }
+
 
 function paginateChains(chains, currentPage, userId, pageSize) {
     console.log(`Paginating chains. Total chains: ${chains.length}, Current page: ${currentPage}, Page size: ${pageSize}`);
@@ -943,20 +1010,25 @@ bot.action('pool_incentives', async (ctx) => {
 });
 
 bot.on('text', async (ctx) => {
-    // Convert text to lowercase
-    const text = ctx.message.text.trim().toLowerCase(); // This line is modified
+    const text = ctx.message.text.trim().toLowerCase();
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
 
-    console.log(`Received text: ${text} from user: ${userId}`);
-
     if (expectedAction[userId] === 'awaiting_pool_id') {
-        // Process pool_id input
         const poolId = parseInt(text, 10);
         if (isNaN(poolId)) {
             await ctx.reply('Please enter a valid pool_id.');
         } else {
             await handlePoolIncentives(ctx, poolId);
+            delete expectedAction[userId];
+        }
+    } else if (expectedAction[userId] === 'awaiting_pool_id_info') { // New condition for Pool Info
+        // Assuming pool IDs are numeric. Adjust if your IDs are different.
+        const poolId = parseInt(text, 10);
+        if (isNaN(poolId)) {
+            await ctx.reply('Please enter a valid pool_id for Pool Info.');
+        } else {
+            await handlePoolInfo(ctx, poolId); // Call the function to handle Pool Info
             delete expectedAction[userId]; // Clear the expected action after handling
         }
     } else if (text === '/start') {
@@ -969,7 +1041,7 @@ bot.on('text', async (ctx) => {
     } else if (!isNaN(text)) {
         // Numeric input for menu selection
         const optionIndex = parseInt(text) - 1;
-        const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives'];
+        const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives', 'pool_info'];
         console.log(`User selected menu option number: ${optionIndex + 1}`);
         if (optionIndex >= 0 && optionIndex < mainMenuOptions.length) {
             const action = mainMenuOptions[optionIndex];
@@ -1180,6 +1252,17 @@ bot.action('block_explorers', async (ctx) => {
         }
     } else {
         await ctx.reply('No chain selected. Please select a chain first.');
+    }
+});
+
+bot.action('pool_info', async (ctx) => {
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    if (userAction && userAction.chain === 'osmosis') {
+        await ctx.reply('Enter pool_id for Osmosis:');
+        expectedAction[userId] = 'awaiting_pool_id_info'; // Set the expected action to await pool ID input
+    } else {
+        await ctx.reply('The "Pool Info" feature is only available for the Osmosis chain.');
     }
 });
 
