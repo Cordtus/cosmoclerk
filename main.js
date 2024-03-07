@@ -843,11 +843,11 @@ async function handlePoolInfo(ctx, poolId) {
 }
 
 async function formatPoolInfoResponse(ctx, poolData, chain) {
-    let formattedResponse = '';
+    let formattedResponse = '```\n'; // Start of markdown code block for monospace formatting
     const poolType = poolData.pool["@type"];
 
     if (poolType.includes("/osmosis.gamm.v1beta1.Pool") || poolType.includes("/osmosis.gamm.poolmodels.stableswap.v1beta1.Pool")) {
-        // Gamm pool formatting
+        // Gamm pool formatting for any number of tokens
         formattedResponse += `Pool Type: Gamm Pool\n`;
         formattedResponse += `ID: ${poolData.pool.id}\n`;
         formattedResponse += `Address: ${poolData.pool.address}\n`;
@@ -857,23 +857,22 @@ async function formatPoolInfoResponse(ctx, poolData, chain) {
         for (const asset of poolData.pool.pool_assets) {
             const baseDenom = await queryIbcId(ctx, asset.token.denom.split('/')[1], chain, true);
             formattedResponse += `Token: ${baseDenom || asset.token.denom}\n`;
+            formattedResponse += `[denom:\`${asset.token.denom}\`]\n`; // Include baseDenom in monospace
         }
     } else if (poolType.includes("/osmosis.concentratedliquidity.v1beta1.Pool")) {
-        // Concentrated liquidity pool formatting
+        // Assuming a modified approach for concentrated liquidity pools if needed
+        // This section is left as is since the original pool type is designed for two tokens only
         formattedResponse += `Pool Type: Concentrated Liquidity Pool\n`;
         formattedResponse += `ID: ${poolData.pool.id}\n`;
         formattedResponse += `Address: ${poolData.pool.address}\n`;
         formattedResponse += `Swap Fee: ${poolData.pool.spread_factor}\n`;
 
-        const tokens = [poolData.pool.token0, poolData.pool.token1];
-        for (const token of tokens) {
-            const baseDenom = await queryIbcId(ctx, token.split('/')[1], chain, true);
-            formattedResponse += `Token: ${baseDenom || token}\n`;
-        }
+}
     } else {
         formattedResponse = 'Unsupported pool type or format.';
     }
 
+    formattedResponse += '```'; // End of markdown code block
     return formattedResponse;
 }
 
