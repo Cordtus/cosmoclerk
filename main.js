@@ -804,11 +804,37 @@ async function handleMainMenuAction(ctx, action, chain) {
                     await ctx.reply('Pool info is only available for Osmosis.');
                 }
                 break;
+                case 'price_info':
+                if (userAction.chain === 'osmosis') {
+                    await ctx.reply('Enter token ticker for Price Info:');
+                    expectedAction[userId] = 'awaiting_token_ticker'; // Set the expected action to await ticker
+                } else {
+                    await ctx.reply('Price info is only available for Osmosis.');
+                }
+                break;
 
                     }
     } catch (error) {
         console.error(`Error handling action ${action}:`, error);
         await ctx.reply(`An error occurred while processing your request: ${error.message}`);
+    }
+}
+
+async function handlePriceInfo(ctx, tokenTicker) {
+    try {
+        const priceInfoUrl = `https://api.osmosis.zone/tokens/v2/price/${tokenTicker}`;
+        const response = await fetch(priceInfoUrl);
+        if (!response.ok) {
+            throw new Error('Error fetching price information.');
+        }
+        const priceData = await response.json();
+        let formattedResponse = `Token: ${tokenTicker.toUpperCase()}\n`;
+        formattedResponse += `Price: \`${priceData.price}\`\n`; // Formatting with backticks for monospace
+        formattedResponse += `24h Change: \`${priceData['24h_change']}%\``; // Adding '%' for clarity
+        await ctx.reply(formattedResponse, { parse_mode: 'Markdown' });
+    } catch (error) {
+        console.error('Error fetching price info:', error);
+        await ctx.reply('Error fetching price information. Please try again.');
     }
 }
 
@@ -867,7 +893,6 @@ async function formatPoolInfoResponse(ctx, poolData, chain) {
         formattedResponse += `Address: ${poolData.pool.address}\n`;
         formattedResponse += `Swap Fee: ${poolData.pool.spread_factor}\n`;
 
-}
     } else {
         formattedResponse = 'Unsupported pool type or format.';
     }
@@ -886,14 +911,14 @@ function sendMainMenu(ctx, userId) {
     ];
 
     // Add IBC-ID and Pool Incentives buttons only for mainnet chains
-    if (!userAction.browsingTestnets) {
-        mainMenuButtons.push(Markup.button.callback('5. IBC-ID', 'ibc_id'));
-        if (userAction.chain === 'osmosis') {
-            mainMenuButtons.push(Markup.button.callback('6. Pool Incentives', 'pool_incentives'));
-            // Add the new button for Pool Info here
-            mainMenuButtons.push(Markup.button.callback('7. Pool Info', 'pool_info'));
-        }
+if (!userAction.browsingTestnets) {
+    mainMenuButtons.push(Markup.button.callback('5. IBC-ID', 'ibc_id'));
+    if (userAction.chain === 'osmosis') {
+        mainMenuButtons.push(Markup.button.callback('6. LP Incentives', 'lp_incentives'));
+        mainMenuButtons.push(Markup.button.callback('7. Pool Info', 'pool_info'));
+        mainMenuButtons.push(Markup.button.callback('8. Price Info', 'price_info'));
     }
+}
 
     return Markup.inlineKeyboard(mainMenuButtons, { columns: 2 });
 }
@@ -1020,9 +1045,15 @@ bot.action('pool_incentives', async (ctx) => {
 bot.on('text', async (ctx) => {
     const text = ctx.message.text.trim().toLowerCase();
     const userId = ctx.from.id;
+
+    if (!userLastAction[userId]) {
+        userLastAction[userId] = {}; // Initialize if not exist
+    }
+
     const userAction = userLastAction[userId];
 
     if (expectedAction[userId] === 'awaiting_pool_id') {
+        // Handle pool ID input for Pool Incentives
         const poolId = parseInt(text, 10);
         if (isNaN(poolId)) {
             await ctx.reply('Please enter a valid pool_id.');
@@ -1030,63 +1061,54 @@ bot.on('text', async (ctx) => {
             await handlePoolIncentives(ctx, poolId);
             delete expectedAction[userId];
         }
-    } else if (expectedAction[userId] === 'awaiting_pool_id_info') { // New condition for Pool Info
-        // Assuming pool IDs are numeric. Adjust if your IDs are different.
+    } else if (expectedAction[userId] === 'awaiting_pool_id_info') {
+        // Handle pool ID input for Pool Info
         const poolId = parseInt(text, 10);
         if (isNaN(poolId)) {
             await ctx.reply('Please enter a valid pool_id for Pool Info.');
         } else {
-            await handlePoolInfo(ctx, poolId); // Call the function to handle Pool Info
-            delete expectedAction[userId]; // Clear the expected action after handling
+            await handlePoolInfo(ctx, poolId);
+            delete expectedAction[userId];
         }
+    } else if (expectedAction[userId] === 'awaiting_token_ticker') {
+        // Handle token ticker input for Price Info
+        await handlePriceInfo(ctx, text); // Assuming text is the ticker
+        delete expectedAction[userId];
     } else if (text === '/start') {
-        // Reset/establish user session
-        if (!userLastAction[userId]) {
-            userLastAction[userId] = {};
-        } else {
-            console.log(`Session already exists for user ${userId}`);
-        }
-    } else if (!isNaN(text)) {
-        // Numeric input for menu selection
-        const optionIndex = parseInt(text) - 1;
-        const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives', 'pool_info'];
-        console.log(`User selected menu option number: ${optionIndex + 1}`);
-        if (optionIndex >= 0 && optionIndex < mainMenuOptions.length) {
-            const action = mainMenuOptions[optionIndex];
-            console.log(`Mapped user input to action: ${action}`);
-            if (userAction && userAction.chain) {
-                await handleMainMenuAction(ctx, action, userAction.chain);
-            } else {
-                await ctx.reply('No chain selected. Please select a chain first.');
-            }
-        } else {
-            await ctx.reply('Invalid option number. Please try again.');
-        }
-        // Within bot.on('text', async (ctx) => { ... })
-        } else if (text.startsWith('ibc/')) {
-            const ibcHash = text.slice(4); // Extract the IBC hash
-            if (userAction && userAction.chain) {
-            const baseDenom = await queryIbcId(ctx, ibcHash, userAction.chain, true);
-            if (baseDenom) {
+        // Handle /start command
+        console.log(`Session started for user ${userId}`);
+        // Optionally, reset userAction or display a welcome message
+    } else if (text.startsWith('ibc/')) {
+        // Handle IBC hash input
+        const ibcHash = text.slice(4);
+        const baseDenom = await queryIbcId(ctx, ibcHash, userAction.chain, true);
+        if (baseDenom) {
             ctx.reply(`Base Denomination: ${baseDenom}`);
-            } else {
+        } else {
             ctx.reply('Failed to fetch IBC denom trace or it does not exist.');
         }
-        } else {
-            ctx.reply('No chain selected. Please select a chain first.');
-        }
-}
- else {
-        const chains = await getChainList();
-        // Adjust chain names to lowercase before comparison
+    } else {
+        // Attempt to recognize and handle chain selection by name
+        const chains = await getChainList(); // Ensure this function returns the list of available chains
         if (chains.map(chain => chain.toLowerCase()).includes(text)) {
-            // Convert the selected chain to its original case as needed or maintain lowercase
+            // If text matches a chain name, select this chain
             updateUserLastAction(userId, { chain: text });
-            const keyboardMarkup = sendMainMenu(ctx, userId);
-            await ctx.reply('Select an action:', keyboardMarkup);
+            await ctx.reply(`Chain selected: ${text.toUpperCase()}. Please choose an action:`, sendMainMenu(ctx, userId));
         } else {
-            // Fallback for unrecognized commands
-            await ctx.reply('Unrecognized command. Please try again or use the menu options.');
+            // Handle numeric input for menu selection
+            const optionIndex = parseInt(text, 10) - 1;
+            if (!isNaN(optionIndex)) {
+                const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives', 'pool_info', 'price_info']; // Make sure to add 'price_info'
+                if (optionIndex >= 0 && optionIndex < mainMenuOptions.length) {
+                    const action = mainMenuOptions[optionIndex];
+                    await handleMainMenuAction(ctx, action, userAction.chain);
+                } else {
+                    await ctx.reply('Invalid option number. Please try again.');
+                }
+            } else {
+                // Fallback for unrecognized commands when not matching chains
+                await ctx.reply('Unrecognized command. Please try again or use the menu options.');
+            }
         }
     }
 });
