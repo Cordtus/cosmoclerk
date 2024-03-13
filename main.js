@@ -917,7 +917,7 @@ function sendMainMenu(ctx, userId) {
 if (!userAction.browsingTestnets) {
     mainMenuButtons.push(Markup.button.callback('5. IBC-ID', 'ibc_id'));
     if (userAction.chain === 'osmosis') {
-        mainMenuButtons.push(Markup.button.callback('6. LP Incentives', 'lp_incentives'));
+        mainMenuButtons.push(Markup.button.callback('6. LP Incentives', 'pool_incentives'));
         mainMenuButtons.push(Markup.button.callback('7. Pool Info', 'pool_info'));
         mainMenuButtons.push(Markup.button.callback('8. Price Info', 'price_info'));
     }
@@ -1024,6 +1024,26 @@ bot.action(/^select_chain:(.+)$/, async (ctx) => {
     }
 });
 
+async function resetSessionAndShowChains(ctx) {
+    const userId = ctx.from.id;
+    // Clear the user's last action and expected action
+    delete userLastAction[userId];
+    delete expectedAction[userId];
+
+    // Fetch the updated chain list
+    const chains = await getChainList();
+
+    // Call paginateChains with the chains, default to the first page (0), pass the userId and pageSize
+    const keyboard = paginateChains(chains, 0, userId, pageSize);
+
+    // Send the chain selection message along with the generated keyboard markup
+    await ctx.reply('Please select a chain:', keyboard);
+}
+
+bot.command('restart', async (ctx) => {
+    await resetSessionAndShowChains(ctx);
+});
+
 bot.action('ibc_id', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
@@ -1038,10 +1058,21 @@ bot.action('pool_incentives', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        await ctx.reply(`Enter pool_id for ${userAction.chain} (AMM pool-type only):`);
+        await ctx.reply(`Enter pool_id for ${userAction.chain}:`);
         expectedAction[userId] = 'awaiting_pool_id';
     } else {
         await ctx.reply('No chain selected. Please select a chain first.');
+    }
+});
+
+bot.action('price_info', async (ctx) => {
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    if (userAction && userAction.chain === 'osmosis') {
+        await ctx.reply('Enter token ticker for Price Info:');
+        expectedAction[userId] = 'awaiting_token_ticker'; // Prepare to handle the token ticker input
+    } else {
+        await ctx.reply('Price info is only available for Osmosis.');
     }
 });
 
@@ -1054,8 +1085,14 @@ bot.on('text', async (ctx) => {
     }
 
     const userAction = userLastAction[userId];
-
-    if (expectedAction[userId] === 'awaiting_pool_id') {
+    if (text === '/start' || text === '/restart') {
+        await resetSessionAndShowChains(ctx);
+    //  'awaiting_token_ticker' expected action
+    } else if (expectedAction[userId] === 'awaiting_token_ticker') {
+        // Call the function to handle Price Info
+        await handlePriceInfo(ctx, text);
+        delete expectedAction[userId]; // Clear the expected action after handling
+    } else if (expectedAction[userId] === 'awaiting_pool_id') {
         // Handle pool ID input for Pool Incentives
         const poolId = parseInt(text, 10);
         if (isNaN(poolId)) {
@@ -1073,17 +1110,10 @@ bot.on('text', async (ctx) => {
             await handlePoolInfo(ctx, poolId); // Call the function to handle Pool Info
             delete expectedAction[userId]; // Clear the expected action after handling
         }
-    } else if (text === '/start') {
-        // Reset/establish user session
-        if (!userLastAction[userId]) {
-            userLastAction[userId] = {};
-        } else {
-            console.log(`Session already exists for user ${userId}`);
-        }
     } else if (!isNaN(text)) {
         // Numeric input for menu selection
         const optionIndex = parseInt(text) - 1;
-        const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives', 'pool_info'];
+        const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives', 'pool_info', 'price_info'];
         console.log(`User selected menu option number: ${optionIndex + 1}`);
         if (optionIndex >= 0 && optionIndex < mainMenuOptions.length) {
             const action = mainMenuOptions[optionIndex];
