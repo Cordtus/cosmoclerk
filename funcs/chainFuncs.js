@@ -1,8 +1,6 @@
-// chainFuncs.js
-
 const fetch = require('node-fetch');
-const { updateUserLastAction, userLastAction, expectedAction, chainInfo } = require('../utils');
-
+const { updateUserLastAction, userLastAction, expectedAction } = require('../utils');
+const { chainInfo } = require('../utils'); // Assuming chainInfo is defined there
 
 async function handlePriceInfo(ctx, tokenTicker) {
     try {
@@ -23,7 +21,8 @@ async function handlePriceInfo(ctx, tokenTicker) {
 }
 
 async function handlePoolInfo(ctx, poolId) {
-    const userAction = userLastAction[ctx.from.id];
+    const userId = ctx.from.id.toString(); // Ensure string
+    const userAction = userLastAction[userId];
     if (!userAction || userAction.chain !== 'osmosis') {
         await ctx.reply('The "Pool Info" feature is only available for the Osmosis chain.');
         return;

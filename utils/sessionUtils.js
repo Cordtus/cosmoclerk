@@ -1,28 +1,53 @@
-// sessionUtils.js
+const config = require('../config');
 
-const userLastAction = new Map();
-const expectedAction = new Map();
-
+let userLastAction = {};
+const expectedAction = {};
 
 function updateUserLastAction(userId, data) {
-  if (data !== null) {
-      userLastAction.set(userId, {
-          ...userLastAction.get(userId), // Spread the existing user action if any
-          ...data,
-          timestamp: new Date() // Adds a timestamp to each action
-      });
-  } else {
-      // If data is null, delete the user's last action
-      userLastAction.delete(userId);
-  }
-}
-
-function updateExpectedAction(userId, action) {
-    if (action !== null) {
-        expectedAction.set(userId, action);
+    userId = userId.toString();
+    if (data !== null) {
+        if (!userLastAction[userId]) {
+            userLastAction[userId] = {}; // Initialize if not already present
+        }
+        // Update or set the user's last action and timestamp
+        userLastAction[userId] = {
+            ...userLastAction[userId],
+            ...data,
+            timestamp: new Date()
+        };
     } else {
-        expectedAction.delete(userId);
+        // If data is null, delete last action to reset
+        delete userLastAction[userId];
     }
 }
 
-module.exports = { updateUserLastAction, updateExpectedAction, userLastAction, expectedAction };
+function updateExpectedAction(userId, action) {
+    userId = userId.toString();
+    if (action !== null) {
+        expectedAction[userId] = action;
+    } else {
+        delete expectedAction[userId];
+    }
+}
+
+function cleanupExpiredSessions() {
+    const now = new Date();
+    Object.keys(userLastAction).forEach(userId => {
+        const session = userLastAction[userId];
+        // check if session expired as per config threshold
+        if (now - new Date(session.timestamp) > config.sessionExpirationThreshold) {
+            delete userLastAction[userId];
+            delete expectedAction[userId];
+        }
+    });
+}
+
+// run cleanup as per config interval
+setInterval(cleanupExpiredSessions, config.cleanupInterval);
+
+module.exports = {
+    userLastAction,
+    expectedAction,
+    updateUserLastAction,
+    updateExpectedAction
+};

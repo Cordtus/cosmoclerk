@@ -1,10 +1,8 @@
-// repoUtils.js
-
 const fs = require('fs');
 const path = require('path');
-const { execPromise } = require('./coreUtils');
+const { promisify } = require('util');
+const exec = promisify(require('child_process').exec);
 const config = require('../config');
-
 
 // Utility function to ensure directory existence
 const ensureDirectoryExists = (dirPath) => {
@@ -14,46 +12,58 @@ const ensureDirectoryExists = (dirPath) => {
   }
 };
 
-const cloneOrUpdateRepo = async function cloneOrUpdateRepo() {
-  const REPO_DIR = config.repoDir;
-  const REPO_URL = config.repoUrl;
-  const STALE_HOURS = config.staleHours;
+// Use exec with promisify for asynchronous execution
+const execAsync = async (command, retries = 3) => {
+  while (retries > 0) {
+    try {
+      const { stdout, stderr } = await exec(command);
+      if (stderr) throw new Error(stderr);
+      console.log(stdout);
+      return; // Success, exit the loop
+    } catch (error) {
+      console.error(`Attempt failed: ${error}`);
+      retries -= 1;
+      if (retries > 0) console.log(`Retrying... (${retries} attempts left)`);
+    }
+  }
+  throw new Error(`All retry attempts failed for command: ${command}`);
+};
+
+// Asynchronously clones or updates the repository based on its current state and the staleHours setting.
+const cloneOrUpdateRepo = async () => {
+  const { repoDir, repoUrl, staleHours } = config;
+
+  ensureDirectoryExists(repoDir);
 
   try {
-    ensureDirectoryExists(REPO_DIR); // Ensure the directory exists before proceeding
-
-    if (!fs.existsSync(path.join(REPO_DIR, '.git'))) {
-      console.log(`[${new Date().toISOString()}] Cloning repository: ${REPO_URL}`);
-      await execPromise(`git clone ${REPO_URL} "${REPO_DIR}"`);
-      console.log(`[${new Date().toISOString()}] Repository cloned successfully.`);
+    if (!fs.existsSync(path.join(repoDir, '.git'))) {
+      console.log(`Cloning repository: ${repoUrl}`);
+      await execAsync(`git clone ${repoUrl} "${repoDir}"`, 2); // Allows for 2 retry attempts
+      console.log('Repository cloned successfully.');
     } else {
-      const stats = fs.statSync(REPO_DIR);
-      const hoursDiff = (new Date() - new Date(stats.mtime)) / 3600000;
-      if (hoursDiff > STALE_HOURS) {
-        try {
-          console.log(`Updating repository in ${REPO_DIR}`);
-          await execPromise(`git -C "${REPO_DIR}" pull`);
-          console.log('Repository updated successfully.');
-        } catch (updateError) {
-          console.error('Error updating repository, attempting to reset:', updateError);
-          await execPromise(`git -C "${REPO_DIR}" fetch --all`);
-          await execPromise(`git -C "${REPO_DIR}" reset --hard origin/master`);
-          await execPromise(`git -C "${REPO_DIR}" pull`);
-          console.log('Repository reset and updated successfully.');
-        }
+      const stats = fs.statSync(path.join(repoDir, '.git'));
+      const hoursDiff = (new Date() - stats.mtime) / 3600000;
+      if (hoursDiff > staleHours) {
+        console.log(`Updating repository in ${repoDir}`);
+        await execAsync(`git -C "${repoDir}" pull`, 2); // Allows for 2 retry attempts
+        console.log('Repository updated successfully.');
       }
     }
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] Error in cloning or updating the repository: ${error.message}`);
+    console.error(`Error in cloning or updating the repository: ${error}`);
+    throw error;
   }
 };
 
-const periodicUpdateRepo = async function periodicUpdateRepo() {
-  try {
-    await cloneOrUpdateRepo();
-  } catch (error) {
-    console.log('Error during periodic repository update:', error);
+// Checks if the repository is stale.
+const checkRepoStaleness = async () => {
+  const { repoDir, staleHours } = config;
+  if (fs.existsSync(path.join(repoDir, '.git'))) {
+    const stats = fs.statSync(path.join(repoDir, '.git'));
+    const hoursDiff = (new Date() - stats.mtime) / 3600000;
+    return hoursDiff > staleHours;
   }
+  return true; // Consider the repo stale if it doesn't exist.
 };
 
 function readFileSafely(filePath) {
@@ -62,26 +72,26 @@ function readFileSafely(filePath) {
       return JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } else {
       console.error(`File not found: ${filePath}`);
-      return null; // File does not exist
+      return null;
     }
   } catch (error) {
-    console.error(`Error reading or parsing file ${filePath}: ${error}`);
-    return null; // Error reading or parsing file
+    console.error(`Error reading or parsing file ${filePath}:`, error);
+    return null;
   }
 }
 
+// Retrieves a list of chains from the specified directory, defaulting to the repository directory.
 async function getChainList(directory = config.repoDir) {
-  const directories = fs.readdirSync(directory, {
-          withFileTypes: true
-      })
-      .filter(dirent => dirent.isDirectory() && /^[A-Za-z0-9]/.test(dirent.name))
+  try {
+    const directories = fs.readdirSync(directory, { withFileTypes: true })
+      .filter(dirent => dirent.isDirectory())
       .map(dirent => dirent.name);
 
-  // Non-case-sensitive sorting
-  return directories.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    return directories.sort((a, b) => a.localeCompare(b));
+  } catch (error) {
+    console.error('Error getting chain list:', error);
+    return [];
+  }
 }
 
-// export functions 
-module.exports = { cloneOrUpdateRepo, periodicUpdateRepo, readFileSafely, getChainList };
-
-
+module.exports = { cloneOrUpdateRepo, readFileSafely, getChainList, checkRepoStaleness };
