@@ -1,24 +1,12 @@
 // chainUtils.js
 
 const { userLastAction } = require('./sessionUtils');
+const { isEndpointHealthy, fetchJson, sanitizeInput, validateAddress } = require('./coreUtils');
+const { readFileSafely } = require ('./repoUtils');
 const fs = require('fs');
 const path = require('path');
-const { readFileSafely, isEndpointHealthy } = require('./coreUtils');
-const { fetchJson } = require('./infoFuncs');  // Import fetchJson from infoFuncs.js
 const config = require('../config');
 
-// Helper functions for input sanitization and validation
-function sanitizeInput(input) {
-    return encodeURIComponent(input);
-}
-
-function validateAddress(address) {
-    // Basic validation for blockchain addresses
-    if (!/^0x[a-fA-F0-9]{40}$|^[a-zA-Z1-9]{42}$/.test(address)) {
-        throw new Error("Invalid address format.");
-    }
-    return address;
-}
 
 // Function to fetch directories based on the chain
 async function getChainDirectories(userAction) {
@@ -49,13 +37,18 @@ async function chainInfo(ctx, chain) {
         const assetData = readFileSafely(assetListPath);
         const chainData = readFileSafely(chainJsonPath);
 
-        const rpcAddress = await findHealthyEndpointOfType(ctx, chainData, 'rpc');
-        const restAddress = await findHealthyEndpointOfType(ctx, chainData, 'rest');
-        const grpcAddress = await findHealthyEndpointOfType(ctx, chainData, 'grpc');
+        // Attempt to find healthy endpoints
+        const rpcAddress = await findHealthyEndpoint(ctx, chainData, 'rpc') || "Unavailable";
+        const restAddress = await findHealthyEndpoint(ctx, chainData, 'rest') || "Unavailable";
+        const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
+        const evmHttpJsonRpcAddress = chainData.apis?.['evm-http-jsonrpc']?.find(api => api.address)?.address || null;
         const blockExplorerUrl = findPreferredExplorer(chainData.explorers);
 
-        const message = constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddress, blockExplorerUrl);
-        return { message, data: { rpcAddress, restAddress, grpcAddress, blockExplorerUrl } };
+        // Construct the response message
+        const healthWarning = (rpcAddress === "Unavailable" && restAddress === "Unavailable") ? "\nWarning: RPC and REST endpoints may be out of sync or offline." : "";
+        const message = constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddress, evmHttpJsonRpcAddress, blockExplorerUrl) + healthWarning;
+
+        return { message, data: { rpcAddress, restAddress, grpcAddress, evmHttpJsonRpcAddress, blockExplorerUrl } };
     } catch (error) {
         console.error(`Error fetching data for ${chain}: ${error}`);
         return `Error fetching data for ${chain}.`;
@@ -63,30 +56,29 @@ async function chainInfo(ctx, chain) {
 }
 
 // Helper function to construct the message displaying chain info
-function constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddress, blockExplorerUrl) {
-    return `Chain ID: \`${chainData.chain_id}\`\n` +
+function constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddress, evmHttpJsonRpcAddress, blockExplorerUrl) {
+    let message = `Chain ID: \`${chainData.chain_id}\`\n` +
         `Chain Name: \`${chainData.chain_name}\`\n` +
         `RPC: \`${rpcAddress}\`\n` +
         `REST: \`${restAddress}\`\n` +
-        `GRPC: \`${grpcAddress}\`\n` +
-        `Explorer: \`${blockExplorerUrl}\`\n`;
+        `GRPC: \`${grpcAddress}\`\n`;
+    if (evmHttpJsonRpcAddress) {
+        message += `EVM-RPC: \`${evmHttpJsonRpcAddress}\`\n`;
+    }
+    message += `Explorer: \`${blockExplorerUrl}\`\n`;
+    return message;
 }
 
-// Utility to find a healthy endpoint from a list
-async function findHealthyEndpoint(ctx, endpoints, isRpc) {
+async function findHealthyEndpoint(ctx, chainData, type) {
+    const endpoints = chainData.apis[type];
+    if (!endpoints) return "Unknown";
+
     for (const endpoint of endpoints) {
-        const healthy = await isEndpointHealthy(endpoint.address, isRpc, ctx);
-        if (healthy) {
+        if (await isEndpointHealthy(endpoint.address, type)) {
             return endpoint.address;
         }
     }
     return "Unknown";  // Return "Unknown" if no healthy endpoint is found
-}
-
-// Find a healthy endpoint based on endpoint type ('rpc', 'rest', or 'grpc')
-async function findHealthyEndpointOfType(ctx, chainData, type) {
-    const endpoints = chainData.apis[type];
-    return endpoints ? await findHealthyEndpoint(ctx, endpoints, type === 'rpc') : "Unknown";
 }
 
 // Function to sort and find preferred blockchain explorer
@@ -260,8 +252,59 @@ async function ibcId(ctx, ibcId, chain, returnBaseDenom = false) {
     }
 }
 
-async function handlePoolIncentives(ctx, poolId) {
-    const userAction = userLastAction[ctx.from.id];
+//async function handlePriceInfo(ctx, tokenTicker) {
+//    try {
+//        const priceInfoUrl = `https://api.osmosis.zone/tokens/v2/price/${tokenTicker}`;
+//        const response = await fetch(priceInfoUrl);
+//        if (!response.ok) {
+//            throw new Error('Error fetching price information.');
+//        }
+//        const priceData = await response.json();
+//        let formattedResponse = `Token: ${tokenTicker.toUpperCase()}\n`;
+//        formattedResponse += `Price: \`${priceData.price}\`\n`; // Formatting with backticks for monospace
+//        formattedResponse += `24h Change: \`${priceData['24h_change']}%\``; // Adding '%' for clarity
+//        await ctx.reply(formattedResponse, { parse_mode: 'Markdown' });
+//    } catch (error) {
+//        console.error('Error fetching price info:', error);
+//        await ctx.reply('Error fetching price information. Please try again.');
+//    }
+//}
+
+async function poolInfo(ctx, poolId) {
+    const userId = ctx.from.id.toString(); // Ensure string
+    const userAction = userLastAction[userId];
+    if (!userAction || userAction.chain !== 'osmosis') {
+        await ctx.reply('The "Pool Info" feature is only available for the Osmosis chain.');
+        return;
+    }
+
+    try {
+        const chainInfoResult = await chainInfo(ctx, userAction.chain);
+        if (!chainInfoResult || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
+            ctx.reply('Error: Healthy REST address not found for the selected chain.');
+            return;
+        }
+
+        let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, '');
+        const poolTypeUrl = `${restAddress}/osmosis/gamm/v1beta1/pools/${poolId}`;
+        const response = await fetch(poolTypeUrl);
+        if (!response.ok) {
+            throw new Error('Error fetching pool information.');
+        }
+        const poolData = await response.json();
+        const poolType = poolData.pool["@type"];
+        const formattedResponse = await formatPoolInfoResponse(ctx, poolData, userAction.chain);
+        ctx.reply(formattedResponse);
+    } catch (error) {
+        console.error('Error fetching pool info:', error);
+        ctx.reply('Error fetching pool information. Please try again.');
+    }
+}
+
+async function poolIncentives(ctx, poolId) {
+    const userId = ctx.from.id.toString();
+    const userAction = userLastAction[userId];
+
     if (!userAction || !userAction.chain) {
         await ctx.reply('No chain selected. Please select a chain first.');
         return;
@@ -284,7 +327,7 @@ async function handlePoolIncentives(ctx, poolId) {
 
 async function processPoolType(ctx, restAddress, poolId, chain) {
     const poolTypeUrl = `${restAddress}/osmosis/gamm/v1beta1/pools/${poolId}`;
-    const poolTypeData = await fetchJson(poolTypeUrl); // Assuming fetchJson handles errors and parses JSON
+    const poolTypeData = await fetchJson(poolTypeUrl);
     const poolType = poolTypeData.pool["@type"];
 
     if (poolType.includes("/osmosis.gamm.v1beta1.Pool") || poolType.includes("/osmosis.gamm.poolmodels.stableswap.v1beta1.Pool")) {
@@ -312,7 +355,7 @@ async function translateIncentiveDenoms(ctx, data) {
         for (const coin of incentive.coins) {
             if (coin.denom.startsWith('ibc/')) {
                 const ibcId = coin.denom.split('/')[1];
-                coin.denom = await ibcId(ctx, ibcId, true); // Assume this function resolves denom translation
+                coin.denom = await ibcId(ctx, ibcId, true);
             }
         }
     }
@@ -333,7 +376,6 @@ async function handleConcentratedLiquidityPoolType(ctx, restAddress, poolId) {
 
 async function calculateIncentives(data) {
     return data.incentive_records.map(record => {
-        // Calculate and format incentive details
         return formatIncentive(record);
     });
 }
@@ -358,15 +400,15 @@ function formatIncentive(record) {
 }
 
 function calculateTimeRemaining(startTime) {
-    // Calculate the time remaining until the incentive period ends
+    // time remaining until incentives end
     const start = new Date(startTime);
     const now = new Date();
     const timeDiff = start.getTime() - now.getTime();
     
-    // Convert time difference from milliseconds to days
+    // convert tfrom ms to days
     const daysRemaining = Math.floor(timeDiff / (1000 * 3600 * 24));
 
-    // If the calculated days are negative, it means the start time has already passed
+    // if calculated days are negative, start time has passed
     if (daysRemaining < 0) {
         return "Incentive period has ended";
     }
@@ -377,9 +419,11 @@ function calculateTimeRemaining(startTime) {
 module.exports = {
     queryCosmWasmContract,
     chainInfo,
+    findHealthyEndpoint,
     chainEndpoints,
     chainPeerNodes,
     chainBlockExplorers,
     ibcId,
-    handlePoolIncentives
+    poolIncentives,
+    processPoolType,
 };

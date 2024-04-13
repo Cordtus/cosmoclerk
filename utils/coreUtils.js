@@ -2,48 +2,74 @@
 
 const dns = require('dns');
 const fetch = require('node-fetch');
+const config = require('../config');
 const unhealthyEndpoints = new Set();
 
-
 function isHostReachable(hostname) {
-    return new Promise((resolve) => {
-        dns.lookup(hostname, (err) => {
-            resolve(!err);
+    return new Promise((resolve, reject) => {
+        dns.lookup(hostname, { timeout: config.dnsTimeout }, (err) => {
+            if (err) reject(err);
+            else resolve(true);
         });
     });
 }
 
-async function isEndpointHealthy(endpoint, checkContent = true) {
+function fetchWithTimeout(url, timeout = config.fetchTimeout) {
+    const controller = new AbortController();
+    const timeoutSignal = setTimeout(() => controller.abort(), timeout);
+    return fetch(url, { signal: controller.signal })
+        .then(response => {
+            clearTimeout(timeoutSignal);
+            return response;
+        })
+        .catch(error => {
+            clearTimeout(timeoutSignal);
+            throw error;
+        });
+}
+
+async function fetchJson(url, timeout = config.fetchTimeout) {
+    try {
+        const response = await fetchWithTimeout(url, timeout);
+        if (!response.ok) {
+            console.error(`Error fetching ${url}: ${response.status} ${response.statusText}`);
+            return null;
+        }
+        return response.json();
+    } catch (error) {
+        console.error(`Exception while fetching ${url}: ${error.message}`);
+        return null;
+    }
+}
+
+async function isEndpointHealthy(endpoint, type) {
     if (unhealthyEndpoints.has(endpoint)) {
-        console.log(`Skipping health check for known unhealthy endpoint: ${endpoint}`);
+        console.log(`Skipping known unhealthy endpoint: ${endpoint}`);
         return false;
     }
 
     const hostname = new URL(endpoint).hostname;
     if (!await isHostReachable(hostname)) {
-        console.log(`Host ${hostname} is not reachable.`);
+        console.log(`Host not reachable: ${hostname}`);
         unhealthyEndpoints.add(endpoint);
         return false;
     }
 
     try {
-        const response = await retryFetchWithTimeout(endpoint, 1); // One retry attempt
-        if (!response.ok) throw new Error(`Response not OK: ${response.statusText}`);
+        const healthCheckUrl = type === 'rpc' ? endpoint + '/status' : endpoint + '/cosmos/base/tendermint/v1beta1/blocks/latest';
+        const response = await fetchJson(healthCheckUrl);
+        if (!response) throw new Error("Failed to fetch health check data");
 
-        if (checkContent) {
-            const data = await response.json();
-            const currentTime = new Date();
-            const latestBlockTime = new Date(data.result?.sync_info?.latest_block_time || data.block?.header?.time);
-            const timeDiff = Math.abs(currentTime - latestBlockTime) / 1000;
+        const latestBlockTime = new Date(type === 'rpc' ? response.result.sync_info.latest_block_time : response.block.header.time);
+        const timeDiff = Math.abs(new Date() - latestBlockTime) / 1000;
 
-            if (timeDiff > 45) {
-                console.log(`Endpoint ${endpoint} block time is too far from current time.`);
-                unhealthyEndpoints.add(endpoint);
-                return false;
-            }
+        if (timeDiff > 60) {
+            console.log(`Endpoint out of sync: ${endpoint}`);
+            unhealthyEndpoints.add(endpoint);
+            return false;
         }
     } catch (error) {
-        console.error(`Error checking endpoint health for ${endpoint}: ${error}`);
+        console.error(`Failed to check health for ${endpoint}: ${error}`);
         unhealthyEndpoints.add(endpoint);
         return false;
     }
@@ -51,32 +77,11 @@ async function isEndpointHealthy(endpoint, checkContent = true) {
     return true;
 }
 
-function fetchWithTimeout(url, timeout = 15000) {
-    return Promise.race([
-        fetch(url),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), timeout)),
-    ]);
-}
-
-async function retryFetchWithTimeout(url, retries = 1) {
-    for (let attempt = 0; attempt <= retries; attempt++) {
-        try {
-            return await fetchWithTimeout(url);
-        } catch (error) {
-            if (error.message === 'timeout' && attempt < retries) {
-                console.log(`Timeout encountered. Retrying fetch for: ${url}`);
-            } else {
-                throw error;
-            }
-        }
-    }
-}
-
 function recoverEndpoint(endpoint) {
     unhealthyEndpoints.delete(endpoint);
 }
 
-function periodicallyCheckUnhealthyEndpoints(interval = 180000) { // Every 180 seconds
+function periodicallyCheckUnhealthyEndpoints(interval = 180000) {
     setInterval(() => {
         unhealthyEndpoints.forEach(async (endpoint) => {
             if (await isEndpointHealthy(endpoint, false)) {
@@ -87,11 +92,24 @@ function periodicallyCheckUnhealthyEndpoints(interval = 180000) { // Every 180 s
     }, interval);
 }
 
+function sanitizeInput(input) {
+    return encodeURIComponent(input);
+}
+
+function validateAddress(address) {
+    if (!/^0x[a-fA-F0-9]{40}$|^[a-zA-Z1-9]{42}$/.test(address)) {
+        throw new Error("Invalid address format.");
+    }
+    return address;
+}
+
 module.exports = {
+    fetchJson,
     fetchWithTimeout,
-    retryFetchWithTimeout,
     isHostReachable,
     isEndpointHealthy,
     recoverEndpoint,
     periodicallyCheckUnhealthyEndpoints,
+    sanitizeInput,
+    validateAddress,
 };

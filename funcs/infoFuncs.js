@@ -2,14 +2,6 @@
 
 const { ibcId } = require('../utils');
 
-async function fetchJson(url) {
-    const response = await fetch(url);
-    if (!response.ok) {
-        throw new Error(`Failed to fetch data from ${url}: ${response.status} ${response.statusText}`);
-    }
-    return response.json();
-}
-
 async function preprocessAndFormatIncentives(ctx, incentivesData, chain) {
     for (const incentive of incentivesData.data) {
         for (const coin of incentive.coins) {
@@ -70,7 +62,6 @@ function formatPoolIncentivesResponse(data) {
 }
 
 module.exports = {
-    fetchJson,
     preprocessAndFormatIncentives,
     sanitizeUrl,
     formatPoolIncentivesResponse,

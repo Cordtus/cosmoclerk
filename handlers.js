@@ -3,7 +3,7 @@
 const config = require('./config');
 const { userLastAction, expectedAction, updateUserLastAction } = require('./utils/sessionUtils');
 const { checkRepoStaleness, getChainList } = require('./utils/repoUtils');
-const { chainInfo, chainEndpoints, chainPeerNodes, chainBlockExplorers, ibcId, handlePoolIncentives } = require('./utils/chainUtils');
+const { chainInfo, chainEndpoints, chainPeerNodes, chainBlockExplorers, ibcId, poolIncentives } = require('./utils/chainUtils');
 const { sendMainMenu, handleMainMenuAction, editOrSendMessage, paginateChains, resetSessionAndShowChains, showTestnets } = require('./funcs/menuFuncs');
 
 
@@ -11,7 +11,7 @@ module.exports = function registerHandlers(bot) {
     bot.command(['start', 'restart'], async (ctx) => {
         const userId = ctx.from.id.toString();
         updateUserLastAction(userId, null);
-        expectedAction.delete(userId);
+        delete expectedAction[userId];
         
         const isRepoStale = await checkRepoStaleness(config.repoDir, config.staleHours);
         if (isRepoStale) {
@@ -42,28 +42,28 @@ module.exports = function registerHandlers(bot) {
     
         if (text === '/start' || text === '/restart') {
             await resetSessionAndShowChains(ctx);
-        } else if (expectedAction.get(userId) === 'awaiting_token_ticker') {
-            await handlePriceInfo(ctx, text);
-            expectedAction.delete(userId); // Clear the expected action after handling
-        } else if (expectedAction.get(userId) === 'awaiting_pool_id') {
+//        } else if (expectedAction[userId] === 'awaiting_token_ticker') {
+//            await handlePriceInfo(ctx, text);
+//            delete expectedAction[userId]; // Clear the expected action after handling
+        } else if (expectedAction[userId] === 'awaiting_pool_id') {
             const poolId = parseInt(text, 10);
             if (isNaN(poolId)) {
                 await ctx.reply('Please enter a valid pool_id.');
             } else {
-                await handlePoolIncentives(ctx, poolId);
-                expectedAction.delete(userId);
+                await poolIncentives(ctx, poolId);
+                delete expectedAction[userId];
             }
-        } else if (expectedAction.get(userId) === 'awaiting_pool_id_info') {
+        } else if (expectedAction[userId] === 'awaiting_pool_id_info') {
             const poolId = parseInt(text, 10);
             if (isNaN(poolId)) {
                 await ctx.reply('Please enter a valid pool_id for Pool Info.');
             } else {
-                await handlePoolInfo(ctx, poolId);
-                expectedAction.delete(userId);
+                await poolInfo(ctx, poolId);
+                delete expectedAction[userId];
             }
         } else if (!isNaN(text)) {
             const optionIndex = parseInt(text, 10) - 1;
-            const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives', 'pool_info', 'price_info'];
+            const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives', 'pool_info'];
         
             const userAction = userLastAction[userId]; // Ensure you get the userAction each time it's needed
             if (userAction && userAction.chain && optionIndex >= 0 && optionIndex < mainMenuOptions.length) {
@@ -232,7 +232,7 @@ module.exports = function registerHandlers(bot) {
     });
 
     bot.action('ibc_id', async (ctx) => {
-        const userId = ctx.from.id.toString(); // Consistent user ID handling
+        const userId = ctx.from.id.toString();
         const userAction = userLastAction[userId];
         if (userAction && userAction.chain) {
             expectedAction.set(userId, 'awaiting_ibc_denom'); // Expecting IBC denom entry next
@@ -243,7 +243,7 @@ module.exports = function registerHandlers(bot) {
     });
     
     bot.action('pool_incentives', async (ctx) => {
-        const userId = ctx.from.id.toString(); // Uniform handling of userId as a string
+        const userId = ctx.from.id.toString();
         const userAction = userLastAction[userId];
         if (userAction && userAction.chain) {
             expectedAction.set(userId, 'awaiting_pool_id'); // Now expecting a pool ID
@@ -253,19 +253,19 @@ module.exports = function registerHandlers(bot) {
         }
     });
     
-    bot.action('price_info', async (ctx) => {
-        const userId = ctx.from.id.toString(); // Ensure consistent handling for userId
-        const userAction = userLastAction[userId];
-        if (userAction && userAction.chain === 'osmosis') {
-            expectedAction.set(userId, 'awaiting_token_ticker'); // Now expecting a token ticker
-            await ctx.reply('Enter token ticker for Price Info:');
-        } else {
-            await ctx.reply('Price info is only available for Osmosis.');
-        }
-    });
+    //bot.action('price_info', async (ctx) => {
+    //    const userId = ctx.from.id.toString();
+    //    const userAction = userLastAction[userId];
+    //    if (userAction && userAction.chain === 'osmosis') {
+    //        expectedAction.set(userId, 'awaiting_token_ticker'); // Now expecting a token ticker
+    //        await ctx.reply('Enter token ticker for Price Info:');
+    //    } else {
+    //        await ctx.reply('Price info is only available for Osmosis.');
+    //    }
+    //});
     
     bot.action('pool_info', async (ctx) => {
-        const userId = ctx.from.id.toString(); // Consistent user ID handling
+        const userId = ctx.from.id.toString();
         const userAction = userLastAction[userId];
         if (userAction && userAction.chain === 'osmosis') {
             expectedAction.set(userId, 'awaiting_pool_id_info'); // Now expecting a pool ID for info

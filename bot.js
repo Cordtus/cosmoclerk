@@ -1,11 +1,13 @@
 // bot.js
 
 require('dotenv').config();
+
 const { Telegraf } = require('telegraf');
+console.log(process.env.BOT_TOKEN);
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const registerHandlers = require('./handlers');
-const config = require('./config'); // Direct import of configuration settings
-const { cloneOrUpdateRepo } = require('./utils/repoUtils'); // Directly import from the source
+const config = require('./config');
+const { cloneOrUpdateRepo } = require('./utils/repoUtils');
 
 (async () => {
     try {
@@ -21,6 +23,14 @@ const { cloneOrUpdateRepo } = require('./utils/repoUtils'); // Directly import f
         .then(() => console.log('Bot is alive!'))
         .catch(error => console.error('Failed to launch bot:', error));
 
-    process.once('SIGINT', () => bot.stop('SIGINT'));
-    process.once('SIGTERM', () => bot.stop('SIGTERM'));
+    const gracefulShutdown = async (signal) => {
+        console.log(`Received ${signal}. Gracefully shutting down...`);
+        await bot.stop();
+        console.log("Bot has been stopped.");
+        process.exit(0);
+    };
+
+    // Capture termination or interrupt signals
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 })();
