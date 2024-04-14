@@ -1,6 +1,6 @@
 // chainUtils.js
 
-const { userLastAction } = require('./sessionUtils');
+const { userLastAction, updateUserLastAction } = require('./sessionUtils');
 const { isEndpointHealthy, fetchJson, sanitizeInput, validateAddress } = require('./coreUtils');
 const { readFileSafely } = require ('./repoUtils');
 const fs = require('fs');
@@ -28,34 +28,49 @@ async function queryCosmWasmContract(chainInfo, contractAddress, query) {
 
 // Example usage in a function, integrating these utilities
 async function chainInfo(ctx, chain) {
+    console.log(`[${new Date().toISOString()}] Starting chainInfo for chain: ${chain}`);
     try {
         const userId = ctx.from.id.toString();
         const userAction = userLastAction[userId];
-        if (!userAction) throw new Error('No user action found.');
+        if (!userAction) {
+            throw new Error('No user action found.');
+        }
 
+        // Log the directories being accessed for further context
         const { assetListPath, chainJsonPath } = await getChainDirectories(userAction);
+        console.log(`Asset list path: ${assetListPath}`);
+        console.log(`Chain JSON path: ${chainJsonPath}`);
+
         const assetData = readFileSafely(assetListPath);
         const chainData = readFileSafely(chainJsonPath);
 
-        // Attempt to find healthy endpoints
+        // Check if the data has been correctly read
+        if (!assetData || !chainData) {
+            throw new Error(`Data for ${chain} is missing or corrupt.`);
+        }
+
+        // Log data to see if it's as expected
+        console.log(`Asset Data for ${chain}:`, assetData);
+        console.log(`Chain Data for ${chain}:`, chainData);
+
         const rpcAddress = await findHealthyEndpoint(ctx, chainData, 'rpc') || "Unavailable";
         const restAddress = await findHealthyEndpoint(ctx, chainData, 'rest') || "Unavailable";
         const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
         const evmHttpJsonRpcAddress = chainData.apis?.['evm-http-jsonrpc']?.find(api => api.address)?.address || null;
         const blockExplorerUrl = findPreferredExplorer(chainData.explorers);
 
-        // Construct the response message
         const healthWarning = (rpcAddress === "Unavailable" && restAddress === "Unavailable") ? "\nWarning: RPC and REST endpoints may be out of sync or offline." : "";
         const message = constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddress, evmHttpJsonRpcAddress, blockExplorerUrl) + healthWarning;
+        console.log(`Chain info message: ${message}`);
 
         return { message, data: { rpcAddress, restAddress, grpcAddress, evmHttpJsonRpcAddress, blockExplorerUrl } };
     } catch (error) {
-        console.error(`Error fetching data for ${chain}: ${error}`);
+        console.error(`[${new Date().toISOString()}] Error in chainInfo for ${chain}: ${error.message}`);
+        console.error(error.stack);
         return `Error fetching data for ${chain}.`;
     }
 }
 
-// Helper function to construct the message displaying chain info
 function constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddress, evmHttpJsonRpcAddress, blockExplorerUrl) {
     let message = `Chain ID: \`${chainData.chain_id}\`\n` +
         `Chain Name: \`${chainData.chain_name}\`\n` +
@@ -70,15 +85,22 @@ function constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddre
 }
 
 async function findHealthyEndpoint(ctx, chainData, type) {
-    const endpoints = chainData.apis[type];
-    if (!endpoints) return "Unknown";
+    console.log(`Checking health for endpoints of type: ${type}`);
+    if (!chainData.apis || !chainData.apis[type]) {
+        console.log(`No endpoints found for type: ${type}`);
+        return "Unknown"; // Return "Unknown" if no endpoints of this type exist
+    }
 
-    for (const endpoint of endpoints) {
-        if (await isEndpointHealthy(endpoint.address, type)) {
-            return endpoint.address;
+    for (const endpoint of chainData.apis[type]) {
+        try {
+            if (await isEndpointHealthy(endpoint.address, type)) {
+                return endpoint.address;
+            }
+        } catch (error) {
+            console.error(`Failed to check health for endpoint: ${endpoint.address}`, error);
         }
     }
-    return "Unknown";  // Return "Unknown" if no healthy endpoint is found
+    return "Unknown"; // Return "Unknown" if no healthy endpoint found
 }
 
 // Function to sort and find preferred blockchain explorer
@@ -118,55 +140,67 @@ function findPreferredExplorer(explorers) {
 async function chainEndpoints(ctx, chain) {
     console.log(`[${new Date().toISOString()}] Fetching endpoints for ${chain}`);
     try {
-        const userId = ctx.from.id.toString(); // Ensure user ID is a string
+        const userId = ctx.from.id.toString();
         const userAction = userLastAction[userId];
         const directory = userAction.browsingTestnets ? path.join(config.repoDir, 'testnets', chain) : path.join(config.repoDir, chain);
         const chainJsonPath = path.join(directory, 'chain.json');
         const chainData = readFileSafely(chainJsonPath);
 
         if (!chainData) {
-            console.log(`Error: Data file for ${chain} is missing or invalid.`);
+            console.error(`Error: Data file for ${chain} is missing or invalid.`);
             await ctx.reply(`Error fetching endpoints for ${chain}. Data file is missing or invalid.`);
             return;
         }
 
-        const formattedEndpoints = formatEndpoints(chainData);
-        const response = formattedEndpoints.filter(section => section.includes('No data available')).join("\n\n").trim();
-        console.log(`Response to be sent: ${response.substring(0, 50)}...`);
+        const response = formatEndpoints(chainData);
+        console.log(`Formatted response for ${chain}:`, response); // Log the complete formatted response
 
         if (response.length > 4096) {
             console.log('Response is too long, sending in parts.');
-            await ctx.replyWithMarkdown(response.substr(0, 4096)); // Example: split message, extend to handle all parts
+            let partIndex = 0;
+            while (partIndex < response.length) {
+                const part = response.substring(partIndex, Math.min(partIndex + 4096, response.length));
+                await ctx.replyWithMarkdown(part);
+                partIndex += 4096;
+            }
         } else {
             await ctx.replyWithMarkdown(response);
         }
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error fetching endpoints for ${chain}: ${error}`);
+        console.error(`Error fetching endpoints for ${chain}: ${error}`);
         await ctx.reply(`Error fetching endpoints for ${chain}. Please try again.`);
     }
 }
 
+function escapeMarkdown(url) {
+    // Escape underscores and other Markdown special characters in URLs
+    return url.replace(/[_]/g, '\\$&');
+}
+
 function formatEndpoints(chainData) {
-    const sections = ["rpc", "rest", "grpc", "evm-http-jsonrpc"].map(apiType => {
-        if (!chainData.apis[apiType] || chainData.apis[apiType].length === 0) {
-            return `*${apiType.toUpperCase()}*\n---\nNo data available`;
+    const apiTypes = ["rpc", "rest", "grpc", "evm-http-jsonrpc"];
+    return apiTypes.reduce((sections, apiType) => {
+        if (chainData.apis[apiType] && chainData.apis[apiType].length > 0) {
+            const formattedSection = formatEndpointSection(apiType.toUpperCase(), chainData.apis[apiType]);
+            sections.push(formattedSection);
+            console.log(`Formatted section for ${apiType}:`, formattedSection); // Log each formatted section
         }
-        return formatEndpointSection(apiType.toUpperCase(), chainData.apis[apiType]);
-    });
-    return sections;
+        return sections;
+    }, []).join("\n\n").trim();
 }
 
 function formatEndpointSection(title, services) {
     const formattedServices = services.map(service => {
-        const provider = sanitizeString(service.provider);
-        const address = sanitizeString(service.address);
-        return `*${provider}*:\n\`${address}\`\n`;
-    });
-    return `*${title}*\n---\n${formattedServices.join("\n")}`;
+        const provider = `*${sanitizeProviderName(service.provider)}*`;
+        const address = `\`${service.address}\``; // Assume address does not need escaping in basic Markdown
+        return `${provider}:\n${address}\n`;
+    }).join("\n");
+    console.log(`Endpoint section for ${title}:`, formattedServices); // Log formatted services
+    return `*${title}*\n---\n${formattedServices}`;
 }
 
-function sanitizeString(str) {
-    return str.replace(/[^\w\s.-]/g, '').replace(/\./g, '_');
+function sanitizeProviderName(name) {
+    return name.replace(/[\u{1F600}-\u{1F64F}]/gu, '').replace(/[.\/]/g, '_').replace(/-/g, '_');
 }
 
 async function chainPeerNodes(ctx, chain) {
@@ -198,7 +232,7 @@ function formatPeer(peer) {
     const provider = sanitizeString(peer.provider || 'unnamed');
     const id = peer.id ? `id: \`${peer.id}\`` : 'id: unavailable';
     const address = peer.address ? `URL: \`${peer.address}\`` : 'URL: unavailable';
-    return `*${provider}*\n${id}\n${address}`;
+    return `*${provider}*\n${id}\n${address}\n`;
 }
 
 async function chainBlockExplorers(ctx, chain) {

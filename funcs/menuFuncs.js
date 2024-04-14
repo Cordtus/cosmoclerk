@@ -165,6 +165,7 @@ function paginateChains(chains, currentPage, userId, pageSize) {
 }
 
 async function showTestnets(ctx, userId) {
+    const userAction = userLastAction[userId];
     const testnetsList = await getTestnetsList();
     const keyboardMarkup = paginateChains(testnetsList, 0, userId.toString(), 18); // Assuming a page size of 18
     await ctx.reply('Select a testnet:', keyboardMarkup);
