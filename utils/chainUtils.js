@@ -152,8 +152,9 @@ async function chainEndpoints(ctx, chain) {
             return;
         }
 
-        const response = formatEndpoints(chainData);
-        console.log(`Formatted response for ${chain}:`, response); // Log the complete formatted response
+        const formattedEndpoints = formatEndpoints(chainData, 3); // Limiting to top 3 entries per endpoint type
+        const response = formattedEndpoints.join("\n\n").trim();
+        console.log(`Response to be sent (preview): ${response.substring(0, 50)}...`);
 
         if (response.length > 4096) {
             console.log('Response is too long, sending in parts.');
@@ -171,36 +172,34 @@ async function chainEndpoints(ctx, chain) {
         await ctx.reply(`Error fetching endpoints for ${chain}. Please try again.`);
     }
 }
-
 function escapeMarkdown(url) {
     // Escape underscores and other Markdown special characters in URLs
     return url.replace(/[_]/g, '\\$&');
 }
 
-function formatEndpoints(chainData) {
+function formatEndpoints(chainData, maxEntriesPerType = 5) {
     const apiTypes = ["rpc", "rest", "grpc", "evm-http-jsonrpc"];
     return apiTypes.reduce((sections, apiType) => {
         if (chainData.apis[apiType] && chainData.apis[apiType].length > 0) {
-            const formattedSection = formatEndpointSection(apiType.toUpperCase(), chainData.apis[apiType]);
+            const formattedSection = formatEndpointSection(apiType.toUpperCase(), chainData.apis[apiType], maxEntriesPerType);
             sections.push(formattedSection);
-            console.log(`Formatted section for ${apiType}:`, formattedSection); // Log each formatted section
         }
         return sections;
-    }, []).join("\n\n").trim();
+    }, []);
 }
 
-function formatEndpointSection(title, services) {
-    const formattedServices = services.map(service => {
-        const provider = `*${sanitizeProviderName(service.provider)}*`;
-        const address = `\`${service.address}\``; // Assume address does not need escaping in basic Markdown
-        return `${provider}:\n${address}\n`;
+function formatEndpointSection(title, services, maxEntries) {
+    const formattedServices = services.slice(0, maxEntries).map(service => {
+        const provider = sanitizeProviderName(service.provider);
+        const address = `\`${service.address}\``;
+        return `*${provider}*:\n${address}\n`;
     }).join("\n");
-    console.log(`Endpoint section for ${title}:`, formattedServices); // Log formatted services
     return `*${title}*\n---\n${formattedServices}`;
 }
 
 function sanitizeProviderName(name) {
-    return name.replace(/[\u{1F600}-\u{1F64F}]/gu, '').replace(/[.\/]/g, '_').replace(/-/g, '_');
+    // Sanitizing provider names to remove emojis and replace special characters
+    return name.replace(/[\u{1F600}-\u{1F64F}]/gu, '').replace(/[^\w\s]/g, '_');
 }
 
 async function chainPeerNodes(ctx, chain) {
@@ -272,16 +271,16 @@ async function ibcId(ctx, ibcId, chain, returnBaseDenom = false) {
     let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, '');
     const url = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcId}`;
     try {
-        const data = await fetchJson(url);
-        const result = data.denom_trace ? data.denom_trace.base_denom : ibcId;
+        const response = await fetchJson(url);
+        const data = await response.json();
         if (returnBaseDenom) {
-            return result;
+            return data.denom_trace ? data.denom_trace.base_denom : ibcId;
         } else {
             ctx.reply(`IBC Denom Trace: \n${JSON.stringify(data.denom_trace, null, 2)}`);
         }
     } catch (error) {
         console.error('Error fetching IBC denom trace:', error);
-        if (returnBaseDenom) return '';
+        if (returnBaseDenom) return ''; // Return empty string for further processing
         ctx.reply('Error fetching IBC denom trace. Please try again.');
     }
 }
