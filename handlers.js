@@ -15,7 +15,7 @@ module.exports = function registerHandlers(bot) {
         
         const isRepoStale = await checkRepoStaleness(config.repoDir, config.staleHours);
         if (isRepoStale) {
-            await periodicUpdateRepo();
+            await cloneOrUpdateRepo();
         }
 
         await resetSessionAndShowChains(ctx);

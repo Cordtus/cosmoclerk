@@ -92,6 +92,11 @@ function periodicallyCheckUnhealthyEndpoints(interval = 180000) {
     }, interval);
 }
 
+function sanitizeString(name) {
+    // Sanitizing provider names to remove emojis and replace special characters
+    return name.replace(/[\u{1F600}-\u{1F64F}]/gu, '').replace(/[^\w\s]/g, '_');
+}
+
 function sanitizeInput(input) {
     return encodeURIComponent(input);
 }
@@ -103,6 +108,11 @@ function validateAddress(address) {
     return address;
 }
 
+function escapeMarkdown(url) {
+    // Escape underscores and other Markdown special characters in URLs
+    return url.replace(/[_]/g, '\\$&');
+}
+
 module.exports = {
     fetchJson,
     fetchWithTimeout,
@@ -110,6 +120,8 @@ module.exports = {
     isEndpointHealthy,
     recoverEndpoint,
     periodicallyCheckUnhealthyEndpoints,
+    sanitizeString,
     sanitizeInput,
     validateAddress,
+    escapeMarkdown,
 };

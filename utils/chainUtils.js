@@ -1,7 +1,7 @@
 // chainUtils.js
 
 const { userLastAction, updateUserLastAction } = require('./sessionUtils');
-const { isEndpointHealthy, fetchJson, sanitizeInput, validateAddress } = require('./coreUtils');
+const { isEndpointHealthy, fetchJson, sanitizeString, sanitizeInput, validateAddress, escapeMarkdown } = require('./coreUtils');
 const { readFileSafely } = require ('./repoUtils');
 const fs = require('fs');
 const path = require('path');
@@ -172,10 +172,6 @@ async function chainEndpoints(ctx, chain) {
         await ctx.reply(`Error fetching endpoints for ${chain}. Please try again.`);
     }
 }
-function escapeMarkdown(url) {
-    // Escape underscores and other Markdown special characters in URLs
-    return url.replace(/[_]/g, '\\$&');
-}
 
 function formatEndpoints(chainData, maxEntriesPerType = 5) {
     const apiTypes = ["rpc", "rest", "grpc", "evm-http-jsonrpc"];
@@ -190,16 +186,11 @@ function formatEndpoints(chainData, maxEntriesPerType = 5) {
 
 function formatEndpointSection(title, services, maxEntries) {
     const formattedServices = services.slice(0, maxEntries).map(service => {
-        const provider = sanitizeProviderName(service.provider);
+        const provider = sanitizeString(service.provider);
         const address = `\`${service.address}\``;
         return `*${provider}*:\n${address}\n`;
     }).join("\n");
     return `*${title}*\n---\n${formattedServices}`;
-}
-
-function sanitizeProviderName(name) {
-    // Sanitizing provider names to remove emojis and replace special characters
-    return name.replace(/[\u{1F600}-\u{1F64F}]/gu, '').replace(/[^\w\s]/g, '_');
 }
 
 async function chainPeerNodes(ctx, chain) {
@@ -256,7 +247,7 @@ function formatBlockExplorers(explorers) {
 
 function formatExplorer(explorer) {
     const kind = sanitizeString(explorer.kind);
-    const url = sanitizeString(explorer.url);
+    const url = escapeMarkdown(explorer.url);
     return `*${kind}*: \`${url}\``;
 }
 
