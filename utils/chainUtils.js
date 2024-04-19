@@ -3,6 +3,7 @@
 const { userLastAction, updateUserLastAction } = require('./sessionUtils');
 const { isEndpointHealthy, fetchJson, sanitizeString, sanitizeInput, validateAddress, escapeMarkdown } = require('./coreUtils');
 const { readFileSafely } = require ('./repoUtils');
+const { formatPoolInfo } = require ('../funcs/infoFuncs');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
@@ -317,7 +318,7 @@ async function poolInfo(ctx, poolId) {
         }
         const poolData = await response.json();
         const poolType = poolData.pool["@type"];
-        const formattedResponse = await formatPoolInfoResponse(ctx, poolData, userAction.chain);
+        const formattedResponse = await formatPoolInfo(ctx, poolData, userAction.chain);
         ctx.reply(formattedResponse);
     } catch (error) {
         console.error('Error fetching pool info:', error);
@@ -383,8 +384,8 @@ async function translateIncentiveDenoms(ctx, data) {
             }
         }
     }
-    const formattedResponse = formatPoolIncentivesResponse(data);
-    ctx.reply(formattedResponse);
+    const formattedPoolIncentivesResponse = formatPoolIncentivesResponse(data);
+    ctx.reply(formattedPoolIncentivesResponse);
 }
 
 async function handleConcentratedLiquidityPoolType(ctx, restAddress, poolId) {
@@ -443,11 +444,15 @@ function calculateTimeRemaining(startTime) {
 module.exports = {
     queryCosmWasmContract,
     chainInfo,
+    chainEndpoints,
+    chainBlockExplorers,
+    chainPeerNodes,
     findHealthyEndpoint,
     chainEndpoints,
     chainPeerNodes,
     chainBlockExplorers,
     ibcId,
+    poolInfo,
     poolIncentives,
     processPoolType,
 };
