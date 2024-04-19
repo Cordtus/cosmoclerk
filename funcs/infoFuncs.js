@@ -2,7 +2,7 @@
 
 const { ibcId } = require('../utils');
 
-async function preprocessAndFormatIncentives(ctx, incentivesData, chain) {
+async function denomTracePoolIncentives(ctx, incentivesData, chain) {
     for (const incentive of incentivesData.data) {
         for (const coin of incentive.coins) {
             if (coin.denom.startsWith('ibc/')) {
@@ -18,7 +18,7 @@ async function preprocessAndFormatIncentives(ctx, incentivesData, chain) {
         }
     }
 
-    return formatPoolIncentivesResponse(incentivesData);
+    return formattedPoolIncentives(incentivesData);
 }
 
 function sanitizeUrl(url) {
@@ -61,8 +61,74 @@ function formatPoolIncentivesResponse(data) {
     return response;
 }
 
+async function formatPoolInfo(ctx, poolData, chain) {
+    let formattedResponse = '';
+    const poolType = poolData.pool["@type"];
+
+    // Fetching the chain info
+    const chainInfoResult = await chainInfo(ctx, chain);
+    console.log('chainInfoResult:', chainInfoResult);
+
+    // Check if chainInfoResult has the expected structure and contains necessary data
+    if (!chainInfoResult || typeof chainInfoResult !== 'object' || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
+        console.error('chainInfoResult is not structured as expected or missing necessary data:', chainInfoResult);
+        return 'Error: Failed to retrieve or validate chain information. Please check the server logs for details.';
+    }
+
+    try {
+        if (poolType.includes("/osmosis.gamm.v1beta1.Pool") || poolType.includes("/osmosis.gamm.poolmodels.stableswap.v1beta1.Pool")) {
+            // Gamm pool formatting
+            formattedResponse += `Pool Type: Gamm Pool\n`;
+            formattedResponse += `ID: ${poolData.pool.id}\n`;
+            formattedResponse += `Address: ${poolData.pool.address}\n`;
+            formattedResponse += `Swap Fee: ${poolData.pool.pool_params.swap_fee}\n`;
+            formattedResponse += `Exit Fee: ${poolData.pool.pool_params.exit_fee}\n`;
+
+            for (const asset of poolData.pool.pool_assets) {
+                const baseDenom = await queryIbcId(ctx, asset.token.denom.split('/')[1], chain, true);
+                formattedResponse += `Token: ${baseDenom || asset.token.denom}\n`;
+                formattedResponse += `[denom:\`${asset.token.denom}\`]\n`;
+            }
+        } else if (poolType.includes("/osmosis.concentratedliquidity.v1beta1.Pool")) {
+            // Concentrated liquidity pool formatting
+            formattedResponse += `Pool Type: Concentrated Liquidity Pool\n`;
+            formattedResponse += `ID: ${poolData.pool.id}\n`;
+            formattedResponse += `Address: ${poolData.pool.address}\n`;
+            formattedResponse += `Swap Fee: ${poolData.pool.spread_factor}\n`;
+
+            const tokens = [poolData.pool.token0, poolData.pool.token1];
+            for (const token of tokens) {
+                const baseDenom = await queryIbcId(ctx, token.split('/')[1], chain, true);
+                formattedResponse += `Token: ${baseDenom || token}\n`;
+            }
+        } else if (poolType.includes("/osmosis.cosmwasmpool.v1beta1.CosmWasmPool")) {
+            const contractAddress = poolData.pool.contract_address;
+
+            // Correctly using chainInfoResult.data for the query
+            const configResponse = await queryCosmWasmContract(ctx, chainInfoResult.data.restAddress, contractAddress, {"get_config": {}});
+            const swapFeeResponse = await queryCosmWasmContract(ctx, chainInfoResult.data.restAddress, contractAddress, {"get_swap_fee": {}});
+            const totalLiquidityResponse = await queryCosmWasmContract(ctx, chainInfoResult.data.restAddress, contractAddress, {"get_total_pool_liquidity": {}});
+
+
+            // Constructing the formatted response
+            formattedResponse += `Pool Type: CosmWasm Pool\nContract Address: ${contractAddress}\nSwap Fee: ${swapFeeResponse.swap_fee}\nConfig: ${JSON.stringify(configResponse)}\n`;
+            totalLiquidityResponse.total_pool_liquidity.forEach(asset => {
+                formattedResponse += `Token: ${asset.denom}\nAmount: ${asset.amount}\n`;
+            });
+        } else {
+            return 'Unsupported pool type or format.';
+        }
+    } catch (error) {
+        console.error('Error processing pool info:', error);
+        return 'Error processing pool information. Please check logs for details.';
+    }
+
+    return formattedResponse;
+}
+
 module.exports = {
-    preprocessAndFormatIncentives,
+    denomTracePoolIncentives,
     sanitizeUrl,
     formatPoolIncentivesResponse,
+    formatPoolInfo,
 };
