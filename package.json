@@ -1,0 +1,29 @@
+{
+  "name": "cosmoclerk",
+  "version": "1.0.0",
+  "description": "Telegram bot wrapper for Cosmos Chain-Registry",
+  "main": "bot.js",
+  "scripts": {
+    "test": "jest"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cordtus/cosmoclerk.git"
+  },
+  "keywords": [
+    "Telegram",
+    "Bot",
+    "Osmosis",
+    "Cosmos",
+    "IBC"
+  ],
+  "author": "Cordt Hanson",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Cordtus/cosmoclerk/issues"
+  },
+  "homepage": "https://github.com/Cordtus/cosmoclerk#readme",
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

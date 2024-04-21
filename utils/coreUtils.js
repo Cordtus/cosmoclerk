@@ -92,6 +92,30 @@ function periodicallyCheckUnhealthyEndpoints(interval = 180000) {
     }, interval);
 }
 
+async function findHealthyEndpoint(ctx, chainData, type) {
+    console.log(`Checking health for endpoints of type: ${type}`);
+    if (!chainData.apis || !chainData.apis[type]) {
+        console.log(`No endpoints found for type: ${type}`);
+        return "Unknown"; // Return "Unknown" if no endpoints of this type exist
+    }
+
+    for (const endpoint of chainData.apis[type]) {
+        try {
+            if (await isEndpointHealthy(endpoint.address, type)) {
+                return endpoint.address;
+            }
+        } catch (error) {
+            console.error(`Failed to check health for endpoint: ${endpoint.address}`, error);
+        }
+    }
+    return "Unknown"; // Return "Unknown" if no healthy endpoint found
+}
+
+function sanitizeUrl(url) {
+    // Escape special MarkdownV2 characters
+    return url.replace(/[()]/g, '\\$&'); // Add more characters if needed for escaping
+}
+
 function sanitizeString(name) {
     // Sanitizing provider names to remove emojis and replace special characters
     return name.replace(/[\u{1F600}-\u{1F64F}]/gu, '').replace(/[^\w\s]/g, '_');
@@ -118,8 +142,10 @@ module.exports = {
     fetchWithTimeout,
     isHostReachable,
     isEndpointHealthy,
+    findHealthyEndpoint,
     recoverEndpoint,
     periodicallyCheckUnhealthyEndpoints,
+    sanitizeUrl,
     sanitizeString,
     sanitizeInput,
     validateAddress,

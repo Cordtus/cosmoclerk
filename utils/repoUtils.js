@@ -1,10 +1,12 @@
+// repoUtils.js
+
 const fs = require('fs');
 const path = require('path');
+const config = require('../config');
 const { promisify } = require('util');
 const exec = promisify(require('child_process').exec);
-const config = require('../config');
 
-// Utility function to ensure directory existence
+// ensure directory existence
 const ensureDirectoryExists = (dirPath) => {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -80,18 +82,32 @@ function readFileSafely(filePath) {
   }
 }
 
-// Retrieves a list of chains from the specified directory, defaulting to the repository directory.
-async function getChainList(directory = config.repoDir) {
-  try {
-    const directories = fs.readdirSync(directory, { withFileTypes: true })
-      .filter(dirent => dirent.isDirectory())
-      .map(dirent => dirent.name);
+// Retrieves a list of chains from the specified subdirectory within the repository directory.
+async function getChainList(subDirectory = '') {
+  // Construct the full path to the target directory using the base repoDir and any subDirectory
+  const directory = path.join(config.repoDir, subDirectory);
 
-    return directories.sort((a, b) => a.localeCompare(b));
+  try {
+      const directories = fs.readdirSync(directory, { withFileTypes: true })
+          .filter(dirent => dirent.isDirectory())
+          .map(dirent => dirent.name);
+
+      // Return the directory names sorted alphabetically
+      return directories.sort((a, b) => a.localeCompare(b));
   } catch (error) {
-    console.error('Error getting chain list:', error);
-    return [];
+      console.error('Error getting chain list:', error);
+      return []; // Return an empty array if there's an error
   }
 }
+
+async function listChains() {
+  const chains = await getChainList();
+  console.log('Main Chains:', chains);
+
+  const testnets = await getChainList('testnets');
+  console.log('Testnets:', testnets);
+}
+
+listChains();
 
 module.exports = { cloneOrUpdateRepo, readFileSafely, getChainList, checkRepoStaleness };
