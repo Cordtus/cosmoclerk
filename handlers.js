@@ -10,8 +10,9 @@ const { sendMainMenu, handleMainMenuAction, editOrSendMessage, paginateChains, r
 module.exports = function registerHandlers(bot) {
     bot.command(['start', 'restart'], async (ctx) => {
         const userId = ctx.from.id.toString();
-        updateUserLastAction(userId, null);
-        sessionUtils.updateExpectedAction(userId, null);
+        sessionUtils.updateUserLastAction(userId, null); // Corrected reference
+        sessionUtils.updateExpectedAction(userId, null); // Corrected reference
+
         
         const isRepoStale = await checkRepoStaleness(config.repoDir, config.staleHours);
         if (isRepoStale) {
@@ -26,11 +27,10 @@ module.exports = function registerHandlers(bot) {
         const userId = ctx.from.id.toString();
     
         if (chain === 'testnets') {
-            // Handle testnets separately if needed
-            await showTestnets(ctx, userId);
+            // ...
         } else {
-            // Update user's last action with the selected chain
-            await updateUserLastAction(userId, { chain: chain, browsingTestnets: false });
+            sessionUtils.updateUserLastAction(userId, { chain: chain, browsingTestnets: false }); // Corrected reference
+
             const keyboardMarkup = await sendMainMenu(ctx, userId); // Ensure sendMainMenu is awaited if it's async
             await ctx.reply('Select an action:', keyboardMarkup);
         }
@@ -38,9 +38,9 @@ module.exports = function registerHandlers(bot) {
     
     bot.on('text', async (ctx) => {
         const text = ctx.message.text.trim().toLowerCase();
-        const userId = ctx.from.id.toString(); // Ensure ID is treated as a string consistently
+        const userId = ctx.from.id.toString();
     
-        const currentAction = sessionUtils.expectedAction[userId]; // Get the current expected action
+        const currentAction = sessionUtils.expectedAction[userId];
     
         if (text === '/start' || text === '/restart') {
             await resetSessionAndShowChains(ctx);
@@ -88,7 +88,7 @@ module.exports = function registerHandlers(bot) {
             const chains = await getChainList();
             if (chains.map(chain => chain.toLowerCase()).includes(text)) {
                 sessionUtils.updateUserLastAction(userId, { chain: text });
-                const keyboardMarkup = sendMainMenu(ctx, userId);
+                const keyboardMarkup = await sendMainMenu(userId); // Corrected to await and added userId as a parameter
                 await ctx.reply('Select an action:', keyboardMarkup);
             } else {
                 await ctx.reply('Unrecognized command. Please try again or use the menu options.');
@@ -99,10 +99,10 @@ module.exports = function registerHandlers(bot) {
     bot.action(/page:(\d+)/, async (ctx) => {
         try {
             const page = parseInt(ctx.match[1]);
-            const userId = ctx.from.id.toString(); // Ensure consistent user ID handling
+            const userId = ctx.from.id.toString();
     
             // Determine if the user is browsing testnets or main chains
-            const userAction = userLastAction[userId];
+            const userAction = sessionUtils.userLastAction[userId];
             const browsingTestnets = userAction ? userAction.browsingTestnets : false;
     
             // Fetch the appropriate chain list based on user selection
@@ -143,8 +143,8 @@ module.exports = function registerHandlers(bot) {
     });
 
     bot.action('chain_info', async (ctx) => {
-        const userId = ctx.from.id.toString(); // Ensure ID is treated as a string
-        const userAction = userLastAction[userId];
+        const userId = ctx.from.id.toString();
+        const userAction = sessionUtils.userLastAction[userId];
     
         if (userAction && userAction.chain) {
             try {
@@ -167,8 +167,8 @@ module.exports = function registerHandlers(bot) {
     });
 
     bot.action('endpoints', async (ctx) => {
-        const userId = ctx.from.id.toString(); // Consistent string handling for user ID
-        const userAction = userLastAction[userId];
+        const userId = ctx.from.id.toString();
+        const userAction = sessionUtils.userLastAction[userId];
     
         if (userAction && userAction.chain) {
             try {
@@ -193,8 +193,8 @@ module.exports = function registerHandlers(bot) {
     });
 
     bot.action('peer_nodes', async (ctx) => {
-        const userId = ctx.from.id.toString(); // Consistent string handling for userId
-        const userAction = userLastAction[userId];
+        const userId = ctx.from.id.toString();
+        const userAction = sessionUtils.userLastAction[userId];
         if (userAction && userAction.chain) {
             try {
                 const peer_nodes = await chainPeerNodes(ctx, userAction.chain);
@@ -212,8 +212,8 @@ module.exports = function registerHandlers(bot) {
     });
 
     bot.action('block_explorers', async (ctx) => {
-        const userId = ctx.from.id.toString(); // Uniform handling of userId as a string
-        const userAction = userLastAction[userId];
+        const userId = ctx.from.id.toString();
+        const userAction = sessionUtils.userLastAction[userId];
         if (userAction && userAction.chain) {
             try {
                 const block_explorers = await chainBlockExplorers(ctx, userAction.chain);
@@ -232,7 +232,7 @@ module.exports = function registerHandlers(bot) {
 
     bot.action('ibc_id', async (ctx) => {
         const userId = ctx.from.id.toString();
-        const userAction = userLastAction[userId];
+        const userAction = sessionUtils.userLastAction[userId];
         if (userAction && userAction.chain) {
             sessionUtils.updateExpectedAction(userId, 'awaiting_ibc_denom'); // Set expected IBC denom entry
             await ctx.reply(`Enter IBC denom for ${userAction.chain}:`);
@@ -243,7 +243,7 @@ module.exports = function registerHandlers(bot) {
     
     bot.action('pool_incentives', async (ctx) => {
         const userId = ctx.from.id.toString();
-        const userAction = userLastAction[userId];
+        const userAction = sessionUtils.userLastAction[userId];
         if (userAction && userAction.chain) {
             sessionUtils.updateExpectedAction(userId, 'awaiting_pool_id'); // Now expecting a pool ID
             await ctx.reply(`Enter pool_id for ${userAction.chain}:`);
@@ -254,7 +254,7 @@ module.exports = function registerHandlers(bot) {
     
     bot.action('pool_info', async (ctx) => {
         const userId = ctx.from.id.toString();
-        const userAction = userLastAction[userId];
+        const userAction = sessionUtils.userLastAction[userId];
         if (userAction && userAction.chain === 'osmosis') {
             sessionUtils.updateExpectedAction(userId, 'awaiting_pool_id_info'); // Now expecting a pool ID for info
             await ctx.reply('Enter pool_id for Osmosis:');

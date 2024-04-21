@@ -1,7 +1,8 @@
 // menuFuncs.js
 
+const { Markup } = require('telegraf');
 const sessionUtils = require('../utils/sessionUtils');
-const { chainInfo, chainPeerNodes, chainEndpoints, chainBlockExplorers } = require('./chainFuncs');
+const { getChainList } = require('../utils/repoUtils');
 const config = require('../config');
 const path = require('path');
 
@@ -24,6 +25,49 @@ function sendMainMenu(userId) {
     }
 
     return Markup.inlineKeyboard(mainMenuButtons, { columns: 2 });
+}
+
+// Modular function for each menu action
+async function handleAction(ctx, action, userAction) {
+    const userId = ctx.from.id.toString();
+    // Determine the correct directory based on whether the user is browsing testnets
+    const directory = userAction.browsingTestnets ? 
+        path.join(config.repoDir, 'testnets', userAction.chain) : 
+        path.join(config.repoDir, userAction.chain);
+
+    switch (action) {
+        case 'chain_info':
+            await chainInfo(ctx, userAction.chain, directory); // Pass the directory to chainInfo
+            break;
+        case 'peer_nodes':
+            const message = await chainPeerNodes(ctx, userAction.chain, directory);
+            await ctx.reply(message, { parse_mode: 'Markdown' });
+            break;
+        case 'endpoints':
+            await chainEndpoints(ctx, userAction.chain, directory);
+            break;
+        case 'block_explorers':
+            const explorersMessage = await chainBlockExplorers(ctx, userAction.chain, directory);
+            await ctx.replyWithMarkdown(explorersMessage);
+            break;
+        case 'ibc_id':
+            await ctx.reply(`Enter IBC denom for ${userAction.chain}:`, { parse_mode: 'Markdown' });
+            break;
+        case 'pool_incentives':
+        case 'pool_info':
+            if (userAction.chain === 'osmosis') {
+                const actionText = action === 'pool_incentives' ? 'Enter pool_id for osmosis:' : 'Enter pool_id for Osmosis:';
+                await ctx.reply(actionText);
+                updateExpectedAction(userId, action === 'pool_incentives' ? 'awaiting_pool_id' : 'awaiting_pool_id_info');
+            } else {
+                const feature = action === 'pool_incentives' ? 'incentives' : 'info';
+                await ctx.reply(`Pool ${feature} are only available for Osmosis.`);
+            }
+            break;
+        default:
+            await ctx.reply('Invalid option selected. Please try again.');
+            break;
+    }
 }
 
 async function handleMainMenuAction(ctx, action) {
