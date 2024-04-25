@@ -1,17 +1,17 @@
 // bot.js
 
 require('dotenv').config();
-
 const { Telegraf } = require('telegraf');
-console.log(process.env.BOT_TOKEN);
-const bot = new Telegraf(process.env.BOT_TOKEN);
-const registerHandlers = require('./handlers');
+const sessionUtils = require('./utils/sessionUtils');
+const repoUtils = require('./utils/repoUtils');
 const config = require('./config');
-const { cloneOrUpdateRepo } = require('./utils/repoUtils');
+const registerHandlers = require('./handlers');
+
+const bot = new Telegraf(process.env.BOT_TOKEN);
 
 (async () => {
     try {
-        await cloneOrUpdateRepo();
+        await repoUtils.cloneOrUpdateRepo();
     } catch (error) {
         console.error('Failed to update repository data on bot startup:', error);
         process.exit(1);
@@ -33,4 +33,5 @@ const { cloneOrUpdateRepo } = require('./utils/repoUtils');
     // Capture termination or interrupt signals
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
 })();

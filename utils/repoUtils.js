@@ -3,8 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
-const { promisify } = require('util');
-const exec = promisify(require('child_process').exec);
+
 
 // ensure directory existence
 const ensureDirectoryExists = (dirPath) => {
@@ -68,35 +67,26 @@ const checkRepoStaleness = async () => {
   return true; // Consider the repo stale if it doesn't exist.
 };
 
-function readFileSafely(filePath) {
+async function readFileSafely(filePath) {
   try {
-    if (fs.existsSync(filePath)) {
-      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } else {
-      console.error(`File not found: ${filePath}`);
-      return null;
-    }
+      const data = await readFile(filePath, { encoding: 'utf8' });
+      return JSON.parse(data);
   } catch (error) {
-    console.error(`Error reading or parsing file ${filePath}:`, error);
-    return null;
+      console.error(`Error reading file ${filePath}:`, error);
+      return null; // Or throw, depending on your error handling strategy
   }
 }
 
-// Retrieves a list of chains from the specified subdirectory within the repository directory.
 async function getChainList(subDirectory = '') {
-  // Construct the full path to the target directory using the base repoDir and any subDirectory
   const directory = path.join(config.repoDir, subDirectory);
-
   try {
       const directories = fs.readdirSync(directory, { withFileTypes: true })
-          .filter(dirent => dirent.isDirectory())
+          .filter(dirent => dirent.isDirectory() && !dirent.name.startsWith('_') && !dirent.name.startsWith('.'))
           .map(dirent => dirent.name);
-
-      // Return the directory names sorted alphabetically
       return directories.sort((a, b) => a.localeCompare(b));
   } catch (error) {
       console.error('Error getting chain list:', error);
-      return []; // Return an empty array if there's an error
+      return [];
   }
 }
 
@@ -108,6 +98,10 @@ async function listChains() {
   console.log('Testnets:', testnets);
 }
 
-listChains();
+module.exports = {
+  cloneOrUpdateRepo,
+  readFileSafely,
+  getChainList,
+  checkRepoStaleness
+};
 
-module.exports = { cloneOrUpdateRepo, readFileSafely, getChainList, checkRepoStaleness };

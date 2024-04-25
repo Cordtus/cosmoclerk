@@ -1,16 +1,10 @@
+// sessionUtils.js
+
 const config = require('../config');
 
-// Stores last actions of each user
 let userLastAction = {};
-
-// Stores the expected next action of users
 const expectedAction = {};
 
-/**
- * Updates or resets the last action for a user.
- * @param {string} userId - The ID of the user.
- * @param {object|null} data - The data to update, or null to reset.
- */
 function updateUserLastAction(userId, data) {
     userId = userId.toString();
     if (data !== null) {
@@ -26,11 +20,11 @@ function updateUserLastAction(userId, data) {
     }
 }
 
-/**
- * Updates the expected action for a user.
- * @param {string} userId - The ID of the user.
- * @param {string|null} action - The expected action, or null to reset.
- */
+function getUserLastAction(userId) {
+    userId = userId.toString();
+    return userLastAction[userId];
+}
+
 function updateExpectedAction(userId, action) {
     userId = userId.toString();
     if (action !== null) {
@@ -40,26 +34,23 @@ function updateExpectedAction(userId, action) {
     }
 }
 
-/**
- * Cleans up expired sessions based on the session expiration threshold.
- */
 function cleanupExpiredSessions() {
     const now = new Date();
     Object.keys(userLastAction).forEach(userId => {
         const session = userLastAction[userId];
-        if (now - new Date(session.timestamp) > config.sessionExpirationThreshold) {
+        if (session && (now - new Date(session.timestamp) > config.sessionExpirationThreshold)) {
             delete userLastAction[userId];
             delete expectedAction[userId];
         }
     });
 }
 
-// Run cleanup periodically based on the configured interval
 setInterval(cleanupExpiredSessions, config.cleanupInterval);
 
 module.exports = {
-    userLastAction,
-    expectedAction,
     updateUserLastAction,
-    updateExpectedAction
+    getUserLastAction,
+    updateExpectedAction,
+    userLastAction,
+    expectedAction
 };

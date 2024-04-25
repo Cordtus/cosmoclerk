@@ -1,79 +1,76 @@
 // handlers.js
 
-const config = require('./config');
+const repoUtils = require('./utils/repoUtils');
 const sessionUtils = require('./utils/sessionUtils');
-const { checkRepoStaleness, getChainList } = require('./utils/repoUtils');
-const { chainInfo, chainEndpoints, chainPeerNodes, chainBlockExplorers, ibcId, poolIncentives } = require('./utils/chainUtils');
-const { sendMainMenu, handleMainMenuAction, editOrSendMessage, paginateChains, resetSessionAndShowChains, showTestnets } = require('./funcs/menuFuncs');
+const chainFuncs = require('./funcs/chainFuncs');
+const menuFuncs = require('./funcs/menuFuncs');
 
 
-module.exports = function registerHandlers(bot) {
-    bot.command(['start', 'restart'], async (ctx) => {
+
+function registerHandlers(bot) {
+    bot.command('testnets', async (ctx) => {
         const userId = ctx.from.id.toString();
-        sessionUtils.updateUserLastAction(userId, null); // Corrected reference
-        sessionUtils.updateExpectedAction(userId, null); // Corrected reference
-
-        
-        const isRepoStale = await checkRepoStaleness(config.repoDir, config.staleHours);
-        if (isRepoStale) {
-            await cloneOrUpdateRepo();
-        }
-
-        await resetSessionAndShowChains(ctx);
+        sessionUtils.updateUserLastAction(userId, { browsingTestnets: true });
+        const chains = await repoUtils.getChainList('testnets');
+        const keyboardMarkup = menuFuncs.paginateChains(chains, 0, userId, config.pageSize);
+        await ctx.reply('Select a testnet:', keyboardMarkup);
+    });
+    // Command to list main chains
+    bot.command('chains', async (ctx) => {
+        const userId = ctx.from.id.toString();
+        sessionUtils.updateUserLastAction(userId, { browsingTestnets: false });
+        const chains = await repoUtils.getChainList();
+        const keyboardMarkup = menuFuncs.paginateChains(chains, 0, userId, config.pageSize);
+        await ctx.reply('Select a chain:', keyboardMarkup);
     });
 
     bot.action(/^select_chain:(.+)$/, async (ctx) => {
         const chain = ctx.match[1];
         const userId = ctx.from.id.toString();
-    
-        if (chain === 'testnets') {
-            // ...
-        } else {
-            sessionUtils.updateUserLastAction(userId, { chain: chain, browsingTestnets: false }); // Corrected reference
-
-            const keyboardMarkup = await sendMainMenu(ctx, userId); // Ensure sendMainMenu is awaited if it's async
-            await ctx.reply('Select an action:', keyboardMarkup);
-        }
+        const browsingTestnets = sessionUtils.getUserLastAction(userId)?.browsingTestnets;
+        sessionUtils.updateUserLastAction(userId, { chain: chain, browsingTestnets: browsingTestnets });
+        const keyboardMarkup = await menuFuncs.sendMainMenu(ctx, userId);
+        await ctx.reply('Select an action:', keyboardMarkup);
     });
-    
+
+    // Text handler for various commands and navigation
     bot.on('text', async (ctx) => {
         const text = ctx.message.text.trim().toLowerCase();
         const userId = ctx.from.id.toString();
-    
-        const currentAction = sessionUtils.expectedAction[userId];
-    
+        const userAction = sessionUtils.getUserLastAction(userId);
+
         if (text === '/start' || text === '/restart') {
-            await resetSessionAndShowChains(ctx);
-        } else if (currentAction === 'awaiting_pool_id') {
+            await menuFuncs.resetSessionAndShowChains(ctx);
+        } else if (userAction === 'awaiting_pool_id') {
             const poolId = parseInt(text, 10);
             if (isNaN(poolId)) {
                 await ctx.reply('Please enter a valid pool_id.');
             } else {
-                await poolIncentives(ctx, poolId);
-                sessionUtils.updateExpectedAction(userId, null); // Clear the expected action after handling
+                await chainFuncs.poolIncentives(ctx, poolId);
+                sessionUtils.updateExpectedAction(userId, null);
             }
-        } else if (currentAction === 'awaiting_pool_id_info') {
+        } else if (userAction === 'awaiting_pool_id_info') {
             const poolId = parseInt(text, 10);
             if (isNaN(poolId)) {
                 await ctx.reply('Please enter a valid pool_id for Pool Info.');
             } else {
-                await poolInfo(ctx, poolId);
-                sessionUtils.updateExpectedAction(userId, null); // Clear the expected action after handling
+                await chainFuncs.poolInfo(ctx, poolId);
+                sessionUtils.updateExpectedAction(userId, null);
             }
         } else if (!isNaN(text)) {
             const optionIndex = parseInt(text, 10) - 1;
             const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives', 'pool_info'];
     
-            const userAction = sessionUtils.userLastAction[userId]; // Get the user action from sessionUtils
+            const userAction = sessionUtils.getUserLastAction(userId);
             if (userAction && userAction.chain && optionIndex >= 0 && optionIndex < mainMenuOptions.length) {
                 const action = mainMenuOptions[optionIndex];
-                await handleMainMenuAction(ctx, action, userAction.chain);
+                await menuFuncs.handleMainMenuAction(ctx, action, userAction.chain);
             } else {
                 await ctx.reply('Invalid option number or no chain selected. Please try again or select a chain first.');
             }
         } else if (text.startsWith('ibc/')) {
-            const ibcHash = text.slice(4); // Extract the IBC hash
-            const userAction = sessionUtils.userLastAction[userId]; // Get the user action from sessionUtils
+            const ibcHash = text.slice(4);
+            const userAction = sessionUtils.getUserLastAction(userId);
             if (userAction && userAction.chain) {
                 const baseDenom = await ibcId(ctx, ibcHash, userAction.chain);
                 if (baseDenom) {
@@ -85,10 +82,11 @@ module.exports = function registerHandlers(bot) {
                 ctx.reply('No chain selected. Please select a chain first.');
             }
         } else {
-            const chains = await getChainList();
+            const browsingTestnets = sessionUtils.getUserLastAction(userId)?.browsingTestnets;
+            const chains = await getChainList(browsingTestnets ? 'testnets' : '');
             if (chains.map(chain => chain.toLowerCase()).includes(text)) {
-                sessionUtils.updateUserLastAction(userId, { chain: text });
-                const keyboardMarkup = await sendMainMenu(userId); // Corrected to await and added userId as a parameter
+                sessionUtils.updateUserLastAction(userId, { chain: text, browsingTestnets: browsingTestnets });
+                const keyboardMarkup = await menuFuncs.sendMainMenu(ctx, userId);
                 await ctx.reply('Select an action:', keyboardMarkup);
             } else {
                 await ctx.reply('Unrecognized command. Please try again or use the menu options.');
@@ -96,19 +94,20 @@ module.exports = function registerHandlers(bot) {
         }
     });
     
+    // Page navigation for chains list
     bot.action(/page:(\d+)/, async (ctx) => {
         try {
             const page = parseInt(ctx.match[1]);
             const userId = ctx.from.id.toString();
     
             // Determine if the user is browsing testnets or main chains
-            const userAction = sessionUtils.userLastAction[userId];
+            const userAction = sessionUtils.getUserLastAction(userId);
             const browsingTestnets = userAction ? userAction.browsingTestnets : false;
     
             // Fetch the appropriate chain list based on user selection
             const chains = browsingTestnets ? 
-                await getChainList(path.join(config.repoDir, 'testnets')) : // Adjust path as necessary for your structure
-                await getChainList();
+                await repoUtils.getChainList('testnets') : 
+                await repoUtils.getChainList();
     
             if (chains.length === 0) {
                 await ctx.reply('No chains available.');
@@ -123,7 +122,7 @@ module.exports = function registerHandlers(bot) {
             const pageSize = config.pageSize;
     
             // Generate keyboard for the requested page
-            const keyboardMarkup = paginateChains(chains, page, userId, pageSize);
+            const keyboardMarkup = menuFuncs.paginateChains(chains, page, userId, pageSize);
     
             if (!keyboardMarkup || keyboardMarkup.inline_keyboard.length === 0) {
                 await ctx.reply('Unable to generate navigation buttons.');
@@ -144,11 +143,10 @@ module.exports = function registerHandlers(bot) {
 
     bot.action('chain_info', async (ctx) => {
         const userId = ctx.from.id.toString();
-        const userAction = sessionUtils.userLastAction[userId];
-    
+        const userAction = sessionUtils.getUserLastAction(userId);
         if (userAction && userAction.chain) {
             try {
-                const chainInfoResult = await chainInfo(ctx, userAction.chain); // Assume chainInfo correctly fetches the data based on chain
+                const chainInfoResult = await chainFuncs.chainInfo(ctx, userAction.chain);
                 if (chainInfoResult && chainInfoResult.message) {
                     await editOrSendMessage(ctx, userId, chainInfoResult.message, {
                         parse_mode: 'Markdown',
@@ -168,17 +166,13 @@ module.exports = function registerHandlers(bot) {
 
     bot.action('endpoints', async (ctx) => {
         const userId = ctx.from.id.toString();
-        const userAction = sessionUtils.userLastAction[userId];
-    
+        const userAction = sessionUtils.getUserLastAction(userId);
         if (userAction && userAction.chain) {
             try {
-                const endpoints = await chainEndpoints(ctx, userAction.chain); // Assume chainEndpoints fetches data based on chain
-    
-                if (!endpoints || typeof endpoints !== 'string' || !endpoints.trim()) {
+                const endpoints = await chainFuncs.chainEndpoints(ctx, userAction.chain);
+                if (!endpoints || !endpoints.trim()) {
                     throw new Error("Endpoints data is unexpectedly empty.");
                 }
-    
-                console.log('Formatted Endpoints:', endpoints);
                 await editOrSendMessage(ctx, userId, endpoints, {
                     parse_mode: 'Markdown',
                     disable_web_page_preview: true,
@@ -194,14 +188,14 @@ module.exports = function registerHandlers(bot) {
 
     bot.action('peer_nodes', async (ctx) => {
         const userId = ctx.from.id.toString();
-        const userAction = sessionUtils.userLastAction[userId];
+        const userAction = sessionUtils.getUserLastAction(userId);
         if (userAction && userAction.chain) {
             try {
-                const peer_nodes = await chainPeerNodes(ctx, userAction.chain);
-                // Ensure peer_nodes has content before attempting to send/edit
-                if (!peer_nodes.trim()) throw new Error('Peer nodes information is currently unavailable.');
-    
-                await editOrSendMessage(ctx, userId, peer_nodes, { parse_mode: 'Markdown', disable_web_page_preview: true });
+                const peerNodes = await chainFuncs.chainPeerNodes(ctx, userAction.chain);
+                if (!peerNodes.trim()) {
+                    throw new Error('Peer nodes information is currently unavailable.');
+                }
+                await menuFuncs.editOrSendMessage(ctx, userId, peerNodes, { parse_mode: 'Markdown', disable_web_page_preview: true });
             } catch (error) {
                 console.error(`Error fetching peer nodes for ${userAction.chain}:`, error);
                 await ctx.reply('An error occurred while fetching peer nodes information.');
@@ -213,14 +207,14 @@ module.exports = function registerHandlers(bot) {
 
     bot.action('block_explorers', async (ctx) => {
         const userId = ctx.from.id.toString();
-        const userAction = sessionUtils.userLastAction[userId];
+        const userAction = sessionUtils.getUserLastAction(userId);
         if (userAction && userAction.chain) {
             try {
-                const block_explorers = await chainBlockExplorers(ctx, userAction.chain);
-                // Check for content in block_explorers before proceeding
-                if (!block_explorers.trim()) throw new Error('Block explorer information is currently unavailable.');
-    
-                await editOrSendMessage(ctx, userId, block_explorers, { parse_mode: 'Markdown', disable_web_page_preview: true });
+                const blockExplorers = await chainFuncs.chainBlockExplorers(ctx, userAction.chain);
+                if (!blockExplorers.trim()) {
+                    throw new Error('Block explorer information is currently unavailable.');
+                }
+                await menuFuncs.editOrSendMessage(ctx, userId, blockExplorers, { parse_mode: 'Markdown', disable_web_page_preview: true });
             } catch (error) {
                 console.error(`Error fetching block explorers for ${userAction.chain}:`, error);
                 await ctx.reply('An error occurred while fetching block explorer information.');
@@ -232,36 +226,36 @@ module.exports = function registerHandlers(bot) {
 
     bot.action('ibc_id', async (ctx) => {
         const userId = ctx.from.id.toString();
-        const userAction = sessionUtils.userLastAction[userId];
+        const userAction = sessionUtils.getUserLastAction(userId);
         if (userAction && userAction.chain) {
-            sessionUtils.updateExpectedAction(userId, 'awaiting_ibc_denom'); // Set expected IBC denom entry
+            sessionUtils.updateExpectedAction(userId, 'awaiting_ibc_denom');
             await ctx.reply(`Enter IBC denom for ${userAction.chain}:`);
         } else {
             await ctx.reply('No chain selected. Please select a chain first.');
         }
     });
-    
+
     bot.action('pool_incentives', async (ctx) => {
         const userId = ctx.from.id.toString();
-        const userAction = sessionUtils.userLastAction[userId];
+        const userAction = sessionUtils.getUserLastAction(userId);
         if (userAction && userAction.chain) {
-            sessionUtils.updateExpectedAction(userId, 'awaiting_pool_id'); // Now expecting a pool ID
+            sessionUtils.updateExpectedAction(userId, 'awaiting_pool_id');
             await ctx.reply(`Enter pool_id for ${userAction.chain}:`);
         } else {
             await ctx.reply('No chain selected. Please select a chain first.');
         }
     });
-    
+
     bot.action('pool_info', async (ctx) => {
         const userId = ctx.from.id.toString();
-        const userAction = sessionUtils.userLastAction[userId];
+        const userAction = sessionUtils.getUserLastAction(userId);
         if (userAction && userAction.chain === 'osmosis') {
-            sessionUtils.updateExpectedAction(userId, 'awaiting_pool_id_info'); // Now expecting a pool ID for info
+            sessionUtils.updateExpectedAction(userId, 'awaiting_pool_id_info');
             await ctx.reply('Enter pool_id for Osmosis:');
         } else {
             await ctx.reply('The "Pool Info" feature is only available for the Osmosis chain.');
         }
     });
 
+};
     module.exports = registerHandlers;
-}

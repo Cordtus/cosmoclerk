@@ -5,26 +5,27 @@ const path = require('path');
 const fetch = require('node-fetch');
 const config = require('../config');
 const sessionUtils = require('../utils/sessionUtils');
+const coreUtils = require('../utils/coreUtils');
+const chainUtils = require('../utils/chainUtils');
 
 async function chainInfo(ctx, chain) {
     console.log(`[${new Date().toISOString()}] Starting chainInfo for chain: ${chain}`);
     try {
         const userId = ctx.from.id.toString();
-        const userAction = sessionUtils.userLastAction[userId]; // Use sessionUtils for session data
+        const userAction = sessionUtils.userLastAction[userId];
         if (!userAction) {
             throw new Error('No user action found.');
         }
 
         const directory = userAction.browsingTestnets ? path.join(config.repoDir, 'testnets', chain) : path.join(config.repoDir, chain);
         const chainJsonPath = path.join(directory, 'chain.json');
-
         const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
         if (!chainData) {
             throw new Error(`Data for ${chain} is missing or corrupt.`);
         }
 
-        const rpcAddress = await findHealthyEndpoint(ctx, chainData, 'rpc') || "Unavailable";
-        const restAddress = await findHealthyEndpoint(ctx, chainData, 'rest') || "Unavailable";
+        const rpcAddress = await coreUtils.findHealthyEndpoint(ctx, chainData, 'rpc') || "Unavailable";
+        const restAddress = await coreUtils.findHealthyEndpoint(ctx, chainData, 'rest') || "Unavailable";
         const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
         const evmHttpJsonRpcAddress = chainData.apis?.['evm-http-jsonrpc']?.find(api => api.address)?.address || null;
         const blockExplorerUrl = findPreferredExplorer(chainData.explorers);
@@ -43,57 +44,43 @@ async function chainInfo(ctx, chain) {
 
 async function chainEndpoints(ctx, chain) {
     console.log(`[${new Date().toISOString()}] Fetching endpoints for ${chain}`);
-    try {
-        const userId = ctx.from.id.toString();
-        const userAction = sessionUtils.userLastAction[userId]; // Use sessionUtils for session data
-        const directory = userAction.browsingTestnets ? path.join(config.repoDir, 'testnets', chain) : path.join(config.repoDir, chain);
-        const chainJsonPath = path.join(directory, 'chain.json');
+    const userId = ctx.from.id.toString();
+    const userAction = sessionUtils.userLastAction[userId];
+    const directory = userAction.browsingTestnets ? 
+                      path.join(config.repoDir, 'testnets', chain) : 
+                      path.join(config.repoDir, chain);
+    const chainJsonPath = path.join(directory, 'chain.json');
+    const chainData = JSON.parse(await fs.promises.readFile(chainJsonPath, 'utf8'));
 
-        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
-        if (!chainData) {
-            console.error(`Error: Data file for ${chain} is missing or invalid.`);
-            await ctx.reply(`Error fetching endpoints for ${chain}. Data file is missing or invalid.`);
-            return;
-        }
-
-        const formattedEndpoints = formatEndpoints(chainData, 3); // Limiting to top 3 entries per endpoint type
-        const response = formattedEndpoints.join("\n\n").trim();
-        console.log(`Response to be sent (preview): ${response.substring(0, 50)}...`);
-
-        if (response.length > 4096) {
-            console.log('Response is too long, sending in parts.');
-            let partIndex = 0;
-            while (partIndex < response.length) {
-                const part = response.substring(partIndex, Math.min(partIndex + 4096, response.length));
-                await ctx.replyWithMarkdown(part);
-                partIndex += 4096;
-            }
-        } else {
-            await ctx.replyWithMarkdown(response);
-        }
-    } catch (error) {
-        console.error(`Error fetching endpoints for ${chain}: ${error}`);
-        await ctx.reply(`Error fetching endpoints for ${chain}. Please try again.`);
+    if (!chainData) {
+        console.error(`Data file for ${chain} is missing or invalid.`);
+        await ctx.reply(`Error fetching endpoints for ${chain}. Data file is missing or invalid.`);
+        return;
     }
+
+    let response = coreUtils.formatEndpoints(chainData.apis, "RPC", 5); // Adjust to include other types like REST, GRPC based on your old logic
+    await ctx.replyWithMarkdown(response);
 }
 
 async function chainPeerNodes(ctx, chain) {
+    const userId = ctx.from.id.toString();
+    const userAction = sessionUtils.userLastAction[userId];
+    const directory = userAction.browsingTestnets ? 
+                      path.join(config.repoDir, 'testnets', chain) : 
+                      path.join(config.repoDir, chain);
+    const chainJsonPath = path.join(directory, 'chain.json');
     try {
-        const userId = ctx.from.id.toString(); // Ensure user ID is a string
-        const userAction = sessionUtils.userLastAction[userId]; // Use sessionUtils for session data
-        const directory = userAction.browsingTestnets ? path.join(config.repoDir, 'testnets', chain) : path.join(config.repoDir, chain);
-        const chainJsonPath = path.join(directory, 'chain.json');
-        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
-
-        const seedsHeader = "Seed Nodes";
-        const peersHeader = "Peer Nodes";
-        const seeds = formatPeers(chainData.peers.seeds, seedsHeader);
-        const persistentPeers = formatPeers(chainData.peers.persistent_peers, peersHeader);
-
-        return `${seeds}${persistentPeers}`;
+        const chainData = JSON.parse(await fs.promises.readFile(chainJsonPath, 'utf8'));
+        if (!chainData.peers) {
+            await ctx.reply('No peer data available for this chain.');
+            return;
+        }
+        const seeds = coreUtils.formatPeers(chainData.peers.seeds, "Seed Nodes");
+        const persistentPeers = coreUtils.formatPeers(chainData.peers.persistent_peers, "Peer Nodes");
+        await ctx.replyWithMarkdown(`${seeds}\n${persistentPeers}`);
     } catch (error) {
         console.error(`Error fetching peer nodes for ${chain}: ${error}`);
-        return `Error fetching peer nodes for ${chain}. Please contact developer...`;
+        await ctx.reply(`Error fetching peer nodes for ${chain}. Please check the configuration or contact developer.`);
     }
 }
 
@@ -103,12 +90,19 @@ async function chainBlockExplorers(ctx, chain) {
         const userAction = sessionUtils.userLastAction[userId]; // Use sessionUtils for session data
         const directory = userAction.browsingTestnets ? path.join(config.repoDir, 'testnets', chain) : path.join(config.repoDir, chain);
         const chainJsonPath = path.join(directory, 'chain.json');
-        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
+        
+        // Asynchronous read of the JSON file
+        const chainDataRaw = await fs.promises.readFile(chainJsonPath, 'utf8');
+        const chainData = JSON.parse(chainDataRaw);
+
+        if (!chainData.explorers || chainData.explorers.length === 0) {
+            return 'No block explorer data available.';
+        }
 
         return formatBlockExplorers(chainData.explorers);
     } catch (error) {
-        console.error(`Error fetching block explorers for ${chain}: ${error}`);
-        return `Error fetching block explorers for ${chain}. Please contact developer or open an issue on Github.`;
+        console.error(`Error fetching block explorers for ${chain}: ${error.message}`);
+        return `Error fetching block explorers for ${chain}. Please check the configuration or contact developer.`;
     }
 }
 
@@ -123,7 +117,7 @@ async function poolInfo(ctx, poolId) {
     try {
         const chainInfoResult = await chainInfo(ctx, userAction.chain);
         if (!chainInfoResult || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
-            ctx.reply('Error: Healthy REST address not found for the selected chain.');
+            await ctx.reply('Error: Healthy REST address not found for the selected chain.');
             return;
         }
 
@@ -134,12 +128,11 @@ async function poolInfo(ctx, poolId) {
             throw new Error('Error fetching pool information.');
         }
         const poolData = await response.json();
-        const poolType = poolData.pool["@type"];
         const formattedResponse = await formatPoolInfo(ctx, poolData, userAction.chain);
-        ctx.reply(formattedResponse);
+        await ctx.reply(formattedResponse);
     } catch (error) {
         console.error('Error fetching pool info:', error);
-        ctx.reply('Error fetching pool information. Please try again.');
+        await ctx.reply('Error fetching pool information. Please try again.');
     }
 }
 
@@ -155,7 +148,7 @@ async function poolIncentives(ctx, poolId) {
     try {
         const chainInfoResult = await chainInfo(ctx, userAction.chain);
         if (!chainInfoResult || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
-            ctx.reply('Error: Healthy REST address not found for the selected chain.');
+            await ctx.reply('Error: Healthy REST address not found for the selected chain.');
             return;
         }
 
@@ -163,7 +156,33 @@ async function poolIncentives(ctx, poolId) {
         await processPoolType(ctx, restAddress, poolId, userAction.chain);
     } catch (error) {
         console.error('Error processing pool incentives:', error);
-        ctx.reply('Error processing request. Please try again.');
+        await ctx.reply('Error processing request. Please try again.');
+    }
+}
+
+async function ibcId(ctx, ibcHash, chain) {
+    const chainInfoResult = await chainInfo(ctx, chain);
+    if (!chainInfoResult || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
+        ctx.reply('Error: REST address not found for the selected chain.');
+        return;
+    }
+
+    let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, '');
+    const url = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`;
+
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (data.denom_trace) {
+            ctx.reply(`IBC Denom Trace: \n${JSON.stringify(data.denom_trace, null, 2)}`);
+            return data.denom_trace.base_denom; // Optionally return the base denom for further processing
+        } else {
+            ctx.reply('No IBC Denom Trace found.');
+        }
+    } catch (error) {
+        console.error('Error fetching IBC denom trace:', error);
+        ctx.reply('Error fetching IBC denom trace. Please try again.');
     }
 }
 
@@ -173,5 +192,6 @@ module.exports = {
     chainPeerNodes,
     chainBlockExplorers,
     poolInfo,
-    poolIncentives
+    poolIncentives,
+    ibcId
 };
