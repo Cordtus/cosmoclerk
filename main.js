@@ -565,7 +565,11 @@ async function queryIbcId(ctx, ibcId, chain, returnBaseDenom = false) {
         const data = await response.json();
 
         if (returnBaseDenom) {
-            return data.denom_trace ? data.denom_trace.base_denom : ibcId;
+            if (data.denom_trace) {
+                return `Path: ${data.denom_trace.path}\nBase Denomination: ${data.denom_trace.base_denom}`;
+            } else {
+                return `Base Denomination: ${ibcId}`;
+            }
         } else {
             ctx.reply(`IBC Denom Trace: \n${JSON.stringify(data.denom_trace, null, 2)}`);
         }
