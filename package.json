@@ -4,7 +4,8 @@
   "description": "Telegram bot wrapper for Cosmos Chain-Registry",
   "main": "bot.js",
   "scripts": {
-    "test": "jest"
+    "test": "jest",
+    "dev": "nodemon bot.js"
   },
   "repository": {
     "type": "git",
@@ -24,6 +25,7 @@
   },
   "homepage": "https://github.com/Cordtus/cosmoclerk#readme",
   "devDependencies": {
-    "jest": "^29.7.0"
+    "jest": "^29.7.0",
+    "nodemon": "^2.0.22"
   }
 }

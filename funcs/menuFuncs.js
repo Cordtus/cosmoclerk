@@ -1,5 +1,6 @@
 // menuFuncs.js
 
+const { Markup } = require('telegraf');
 const { chainInfo, chainPeerNodes, chainEndpoints, chainBlockExplorers } = require('./chainFuncs');
 const sessionUtils = require('../utils/sessionUtils');
 const repoUtils = require('../utils/repoUtils');
