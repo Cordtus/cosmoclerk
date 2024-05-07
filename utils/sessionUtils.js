@@ -1,6 +1,4 @@
-// sessionUtils.js
-
-const config = require('../config');
+const { sessionExpirationThreshold, cleanupInterval } = require('./config');
 
 let userLastAction = {};
 const expectedAction = {};
@@ -8,14 +6,11 @@ const expectedAction = {};
 function updateUserLastAction(userId, data) {
     userId = userId.toString();
     if (data !== null) {
-        // Initialize if not already present
         if (!userLastAction[userId]) {
             userLastAction[userId] = {};
         }
-        // Update the last action with new data and timestamp
         userLastAction[userId] = { ...userLastAction[userId], ...data, timestamp: new Date() };
     } else {
-        // Reset the last action for the user
         delete userLastAction[userId];
     }
 }
@@ -38,19 +33,17 @@ function cleanupExpiredSessions() {
     const now = new Date();
     Object.keys(userLastAction).forEach(userId => {
         const session = userLastAction[userId];
-        if (session && (now - new Date(session.timestamp) > config.sessionExpirationThreshold)) {
+        if (session && (now - new Date(session.timestamp) > sessionExpirationThreshold)) {
             delete userLastAction[userId];
             delete expectedAction[userId];
         }
     });
 }
 
-setInterval(cleanupExpiredSessions, config.cleanupInterval);
+setInterval(cleanupExpiredSessions, cleanupInterval);
 
 module.exports = {
     updateUserLastAction,
     getUserLastAction,
-    updateExpectedAction,
-    userLastAction,
-    expectedAction
+    updateExpectedAction
 };

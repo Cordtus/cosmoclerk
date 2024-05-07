@@ -1,10 +1,10 @@
 // chainUtils.js
 
-const sessionUtils = require('./sessionUtils');
-const coreUtils = require('./coreUtils');
-const fs = require('fs');
-const path = require('path');
-const config = require('../config');
+const { readFileSync, promises: fsPromises } = require('fs');
+const { join } = require('path');
+const { repoDir } = require('./config');
+const { userLastAction } = require('./sessionUtils');
+const { findHealthyEndpoint, formatPeers } = require('./coreUtils');
 
 
 function constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddress, evmHttpJsonRpcAddress, blockExplorerUrl) {

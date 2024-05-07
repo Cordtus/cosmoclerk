@@ -2,8 +2,8 @@
 
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const sessionUtils = require('./utils/sessionUtils');
-const repoUtils = require('./utils/repoUtils');
+const sessionUtils = require('./sessionUtils');
+const repoUtils = require('./repoUtils');
 const config = require('./config');
 const registerHandlers = require('./handlers');
 
@@ -33,5 +33,4 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
     // Capture termination or interrupt signals
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-
 })();

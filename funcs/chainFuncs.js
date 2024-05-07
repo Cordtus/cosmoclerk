@@ -1,31 +1,33 @@
 // chainFuncs.js
 
-const fs = require('fs');
-const path = require('path');
+const { readFileSync } = require('fs');
+const { join } = require('path');
 const fetch = require('node-fetch');
-const config = require('../config');
-const sessionUtils = require('../utils/sessionUtils');
-const coreUtils = require('../utils/coreUtils');
-const chainUtils = require('../utils/chainUtils');
+const { repoDir } = require('./config');
+const { userLastAction } = require('./sessionUtils');
+const { findHealthyEndpoint } = require('./coreUtils');
+const { getChainData } = require('./chainUtils');
+
+
 
 async function chainInfo(ctx, chain) {
     console.log(`[${new Date().toISOString()}] Starting chainInfo for chain: ${chain}`);
     try {
         const userId = ctx.from.id.toString();
-        const userAction = sessionUtils.userLastAction[userId];
+        const userAction = userLastAction[userId];
         if (!userAction) {
             throw new Error('No user action found.');
         }
 
-        const directory = userAction.browsingTestnets ? path.join(config.repoDir, 'testnets', chain) : path.join(config.repoDir, chain);
-        const chainJsonPath = path.join(directory, 'chain.json');
-        const chainData = JSON.parse(fs.readFileSync(chainJsonPath, 'utf8'));
+        const directory = userAction.browsingTestnets ? join(repoDir, 'testnets', chain) : join(repoDir, chain);
+        const chainJsonPath = join(directory, 'chain.json');
+        const chainData = JSON.parse(readFileSync(chainJsonPath, 'utf8'));
         if (!chainData) {
             throw new Error(`Data for ${chain} is missing or corrupt.`);
         }
 
-        const rpcAddress = await coreUtils.findHealthyEndpoint(ctx, chainData, 'rpc') || "Unavailable";
-        const restAddress = await coreUtils.findHealthyEndpoint(ctx, chainData, 'rest') || "Unavailable";
+        const rpcAddress = await findHealthyEndpoint(ctx, chainData, 'rpc') || "Unavailable";
+        const restAddress = await findHealthyEndpoint(ctx, chainData, 'rest') || "Unavailable";
         const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
         const evmHttpJsonRpcAddress = chainData.apis?.['evm-http-jsonrpc']?.find(api => api.address)?.address || null;
         const blockExplorerUrl = findPreferredExplorer(chainData.explorers);
@@ -45,12 +47,12 @@ async function chainInfo(ctx, chain) {
 async function chainEndpoints(ctx, chain) {
     console.log(`[${new Date().toISOString()}] Fetching endpoints for ${chain}`);
     const userId = ctx.from.id.toString();
-    const userAction = sessionUtils.userLastAction[userId];
+    const userAction = userLastAction[userId];
     const directory = userAction.browsingTestnets ? 
-                      path.join(config.repoDir, 'testnets', chain) : 
-                      path.join(config.repoDir, chain);
-    const chainJsonPath = path.join(directory, 'chain.json');
-    const chainData = JSON.parse(await fs.promises.readFile(chainJsonPath, 'utf8'));
+                      join(repoDir, 'testnets', chain) : 
+                      join(repoDir, chain);
+    const chainJsonPath = join(directory, 'chain.json');
+    const chainData = JSON.parse(await promises.readFile(chainJsonPath, 'utf8'));
 
     if (!chainData) {
         console.error(`Data file for ${chain} is missing or invalid.`);
@@ -58,25 +60,25 @@ async function chainEndpoints(ctx, chain) {
         return;
     }
 
-    let response = coreUtils.formatEndpoints(chainData.apis, "RPC", 5); // Adjust to include other types like REST, GRPC based on your old logic
+    let response = formatEndpoints(chainData.apis, "RPC", 5); // Adjust to include other types like REST, GRPC based on your old logic
     await ctx.replyWithMarkdown(response);
 }
 
 async function chainPeerNodes(ctx, chain) {
     const userId = ctx.from.id.toString();
-    const userAction = sessionUtils.userLastAction[userId];
+    const userAction = userLastAction[userId];
     const directory = userAction.browsingTestnets ? 
-                      path.join(config.repoDir, 'testnets', chain) : 
-                      path.join(config.repoDir, chain);
-    const chainJsonPath = path.join(directory, 'chain.json');
+                      join(repoDir, 'testnets', chain) : 
+                      join(repoDir, chain);
+    const chainJsonPath = join(directory, 'chain.json');
     try {
-        const chainData = JSON.parse(await fs.promises.readFile(chainJsonPath, 'utf8'));
+        const chainData = JSON.parse(await promises.readFile(chainJsonPath, 'utf8'));
         if (!chainData.peers) {
             await ctx.reply('No peer data available for this chain.');
             return;
         }
-        const seeds = coreUtils.formatPeers(chainData.peers.seeds, "Seed Nodes");
-        const persistentPeers = coreUtils.formatPeers(chainData.peers.persistent_peers, "Peer Nodes");
+        const seeds = formatPeers(chainData.peers.seeds, "Seed Nodes");
+        const persistentPeers = formatPeers(chainData.peers.persistent_peers, "Peer Nodes");
         await ctx.replyWithMarkdown(`${seeds}\n${persistentPeers}`);
     } catch (error) {
         console.error(`Error fetching peer nodes for ${chain}: ${error}`);
@@ -87,12 +89,12 @@ async function chainPeerNodes(ctx, chain) {
 async function chainBlockExplorers(ctx, chain) {
     try {
         const userId = ctx.from.id.toString(); // Ensure user ID is a string
-        const userAction = sessionUtils.userLastAction[userId]; // Use sessionUtils for session data
-        const directory = userAction.browsingTestnets ? path.join(config.repoDir, 'testnets', chain) : path.join(config.repoDir, chain);
-        const chainJsonPath = path.join(directory, 'chain.json');
+        const userAction = userLastAction[userId]; // Use sessionUtils for session data
+        const directory = userAction.browsingTestnets ? join(repoDir, 'testnets', chain) : join(repoDir, chain);
+        const chainJsonPath = join(directory, 'chain.json');
         
         // Asynchronous read of the JSON file
-        const chainDataRaw = await fs.promises.readFile(chainJsonPath, 'utf8');
+        const chainDataRaw = await promises.readFile(chainJsonPath, 'utf8');
         const chainData = JSON.parse(chainDataRaw);
 
         if (!chainData.explorers || chainData.explorers.length === 0) {
@@ -108,7 +110,7 @@ async function chainBlockExplorers(ctx, chain) {
 
 async function poolInfo(ctx, poolId) {
     const userId = ctx.from.id.toString(); // Ensure string
-    const userAction = sessionUtils.userLastAction[userId];
+    const userAction = userLastAction[userId];
     if (!userAction || userAction.chain !== 'osmosis') {
         await ctx.reply('The "Pool Info" feature is only available for the Osmosis chain.');
         return;
@@ -138,7 +140,7 @@ async function poolInfo(ctx, poolId) {
 
 async function poolIncentives(ctx, poolId) {
     const userId = ctx.from.id.toString();
-    const userAction = sessionUtils.userLastAction[userId];
+    const userAction = userLastAction[userId];
 
     if (!userAction || !userAction.chain) {
         await ctx.reply('No chain selected. Please select a chain first.');
@@ -194,4 +196,5 @@ module.exports = {
     poolInfo,
     poolIncentives,
     ibcId
-};
+  };
+  
