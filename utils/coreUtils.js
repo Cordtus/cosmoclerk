@@ -1,87 +1,91 @@
 // coreUtils.js
 
-const { dnsTimeout, fetchTimeout } = require('./config');
 const dns = require('dns');
-const unhealthyEndpoints = new Set(); // Initialize an empty Set to track unhealthy endpoints
+const fetch = require('node-fetch');
+const config = require('../config');
+const unhealthyEndpoints = new Set();
 
-// Check if a host is reachable within a specified timeout
 function isHostReachable(hostname) {
     return new Promise((resolve, reject) => {
-        dns.lookup(hostname, { timeout: dnsTimeout }, (err) => {
-            if (err) reject(new Error(`Host ${hostname} not reachable: ${err.message}`));
+        dns.lookup(hostname, { timeout: config.dnsTimeout }, (err) => {
+            if (err) reject(err);
             else resolve(true);
         });
     });
 }
 
-// Fetch data from a URL with a timeout mechanism
 function fetchWithTimeout(url, timeout = config.fetchTimeout) {
     const controller = new AbortController();
     const timeoutSignal = setTimeout(() => controller.abort(), timeout);
     return fetch(url, { signal: controller.signal })
         .then(response => {
             clearTimeout(timeoutSignal);
-            if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.statusText}`);
             return response;
         })
         .catch(error => {
             clearTimeout(timeoutSignal);
-            throw new Error(`Fetch with timeout error: ${error.message}`);
+            throw error;
         });
 }
 
-// Fetch JSON from a URL with timeout handling
-async function fetchJson(url, timeout = fetchTimeout) {
+async function fetchJson(url, timeout = config.fetchTimeout) {
     try {
         const response = await fetchWithTimeout(url, timeout);
-        return await response.json();
+        if (!response.ok) {
+            console.error(`Error fetching ${url}: ${response.status} ${response.statusText}`);
+            return null;
+        }
+        return response.json();
     } catch (error) {
-        console.error(`Exception while fetching JSON from ${url}: ${error.message}`);
+        console.error(`Exception while fetching ${url}: ${error.message}`);
         return null;
     }
 }
 
-// Check if an endpoint is healthy based on its response time and accessibility
 async function isEndpointHealthy(endpoint, type) {
     if (unhealthyEndpoints.has(endpoint)) {
         console.log(`Skipping known unhealthy endpoint: ${endpoint}`);
         return false;
     }
 
+    const hostname = new URL(endpoint).hostname;
+    if (!await isHostReachable(hostname)) {
+        console.log(`Host not reachable: ${hostname}`);
+        unhealthyEndpoints.add(endpoint);
+        return false;
+    }
+
     try {
-        const hostname = new URL(endpoint).hostname;
-        await isHostReachable(hostname);
         const healthCheckUrl = type === 'rpc' ? endpoint + '/status' : endpoint + '/cosmos/base/tendermint/v1beta1/blocks/latest';
         const response = await fetchJson(healthCheckUrl);
+        if (!response) throw new Error("Failed to fetch health check data");
 
         const latestBlockTime = new Date(type === 'rpc' ? response.result.sync_info.latest_block_time : response.block.header.time);
         const timeDiff = Math.abs(new Date() - latestBlockTime) / 1000;
 
         if (timeDiff > 60) {
-            console.log(`Endpoint ${endpoint} out of sync: ${timeDiff}s delay`);
+            console.log(`Endpoint out of sync: ${endpoint}`);
             unhealthyEndpoints.add(endpoint);
             return false;
         }
-        return true;
     } catch (error) {
-        console.error(`Failed to verify health for ${endpoint}: ${error}`);
+        console.error(`Failed to check health for ${endpoint}: ${error}`);
         unhealthyEndpoints.add(endpoint);
         return false;
     }
+
+    return true;
 }
 
-// Attempt to recover a previously unhealthy endpoint
 function recoverEndpoint(endpoint) {
-    if (unhealthyEndpoints.delete(endpoint)) {
-        console.log(`Recovered endpoint: ${endpoint}`);
-    }
+    unhealthyEndpoints.delete(endpoint);
 }
 
-// Periodically check and attempt to recover unhealthy endpoints
 function periodicallyCheckUnhealthyEndpoints(interval = 180000) {
     setInterval(() => {
         unhealthyEndpoints.forEach(async (endpoint) => {
             if (await isEndpointHealthy(endpoint, false)) {
+                console.log(`Endpoint recovered: ${endpoint}`);
                 recoverEndpoint(endpoint);
             }
         });

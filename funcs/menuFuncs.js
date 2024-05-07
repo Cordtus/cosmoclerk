@@ -1,16 +1,13 @@
 // menuFuncs.js
 
-const { Markup } = require('telegraf');
 const { chainInfo, chainPeerNodes, chainEndpoints, chainBlockExplorers } = require('./chainFuncs');
-const { userLastAction, updateUserLastAction, updateExpectedAction } = require('./sessionUtils');
-const { getChainList } = require('./repoUtils');
-const { pageSize } = require('./config');
-
-
+const sessionUtils = require('../utils/sessionUtils');
+const repoUtils = require('../utils/repoUtils');
+const config = require('../config');
 
 function sendMainMenu(userId) {
     userId = userId.toString();
-    const userAction = userLastAction[userId];
+    const userAction = sessionUtils.userLastAction[userId];
     const mainMenuButtons = [
         Markup.button.callback('1. Chain Info', 'chain_info'),
         Markup.button.callback('2. Peer Nodes', 'peer_nodes'),
@@ -41,8 +38,8 @@ async function handleAction(ctx, action, userAction) {
 
     // Define the directory here based on userAction
     const directory = userAction.browsingTestnets ? 
-        path.join(repoDir, 'testnets', userAction.chain) : 
-        path.join(repoDir, userAction.chain);
+        path.join(config.repoDir, 'testnets', userAction.chain) : 
+        path.join(config.repoDir, userAction.chain);
 
     switch (action) {
         case 'chain_info':
@@ -67,7 +64,7 @@ async function handleAction(ctx, action, userAction) {
             if (userAction.chain === 'osmosis') {
                 const actionText = action === 'pool_incentives' ? 'Enter pool_id for osmosis:' : 'Enter pool_id for Osmosis:';
                 await ctx.reply(actionText);
-                updateExpectedAction(userId, action === 'pool_incentives' ? 'awaiting_pool_id' : 'awaiting_pool_id_info'); // Make sure to use the correct function name here
+                sessionUtils.updateExpectedAction(userId, action === 'pool_incentives' ? 'awaiting_pool_id' : 'awaiting_pool_id_info'); // Make sure to use the correct function name here
             } else {
                 const feature = action === 'pool_incentives' ? 'incentives' : 'info';
                 await ctx.reply(`Pool ${feature} are only available for Osmosis.`);
@@ -81,7 +78,7 @@ async function handleAction(ctx, action, userAction) {
 
 async function handleMainMenuAction(ctx, action) {
     const userId = ctx.from.id.toString();
-    const userAction = getUserLastAction(userId);
+    const userAction = sessionUtils.getUserLastAction(userId);
 
     console.log(`Handling action for user ${userId}: action=${action}, userAction=${JSON.stringify(userAction)}`);
 
@@ -99,7 +96,7 @@ async function handleMainMenuAction(ctx, action) {
 }
 
 async function editOrSendMessage(ctx, userId, message, options = {}) {
-    const userAction = userLastAction[userId];
+    const userAction = sessionUtils.userLastAction[userId];
     if (userAction && userAction.messageId) {
         try {
             await ctx.telegram.editMessageText(
@@ -115,7 +112,7 @@ async function editOrSendMessage(ctx, userId, message, options = {}) {
         }
     } else {
         const sentMessage = await ctx.reply(message, options);
-        updateUserLastAction(userId, {
+        sessionUtils.updateUserLastAction(userId, {
             messageId: sentMessage.message_id,
             chatId: sentMessage.chat.id
         });
@@ -123,14 +120,18 @@ async function editOrSendMessage(ctx, userId, message, options = {}) {
 }
 
 function paginateChains(chains, currentPage, userId, pageSize) {
+    userId = userId.toString();
+    const lastSelectedChain = sessionUtils.userLastAction[userId]?.chain;
+
     console.log(`Paginating chains. Total chains: ${chains.length}, Current page: ${currentPage}, Page size: ${pageSize}`);
+
     currentPage = parseInt(currentPage);
     pageSize = parseInt(pageSize);
+
     const totalPages = Math.ceil(chains.length / pageSize);
     const start = currentPage * pageSize;
     const end = start + pageSize;
     const chainsToShow = chains.slice(start, end);
-    const lastSelectedChain = userLastAction[userId]?.chain;
 
     const buttons = chainsToShow.map(chain => {
         const buttonText = chain === lastSelectedChain ? `🔴 ${chain}` : chain;
@@ -144,7 +145,6 @@ function paginateChains(chains, currentPage, userId, pageSize) {
     if (currentPage < totalPages - 1) {
         navigationButtons.push(Markup.button.callback('Next →', `page:${currentPage + 1}`));
     }
-
     const rowsOfButtons = [...buttons.reduce((rows, button, index) => {
         if (index % 3 === 0) rows.push([]);
         rows[rows.length - 1].push(button);
@@ -157,24 +157,24 @@ function paginateChains(chains, currentPage, userId, pageSize) {
 async function showTestnets(ctx) {
     const userId = ctx.from.id.toString();
     const testnetsList = await getTestnetsList();
-    const keyboardMarkup = paginateChains(testnetsList, 0, userId, pageSize);
+    const keyboardMarkup = paginateChains(testnetsList, 0, userId, config.pageSize);
     await ctx.reply('Select a testnet:', keyboardMarkup);
-    updateUserLastAction(userId, { browsingTestnets: true });
+    sessionUtils.updateUserLastAction(userId, { browsingTestnets: true });
 }
 
 async function selectChain(ctx, chainName, isTestnet = false) {
     const userId = ctx.from.id.toString();
-    updateUserLastAction(userId, { chain: chainName, browsingTestnets: isTestnet });
+    sessionUtils.updateUserLastAction(userId, { chain: chainName, browsingTestnets: isTestnet });
     await ctx.reply(`${isTestnet ? 'Testnet' : 'Chain'} ${chainName} selected. Please choose an option from the menu.`);
 }
 
 async function resetSessionAndShowChains(ctx) {
     const userId = ctx.from.id.toString();
-    updateUserLastAction(userId, null); // Clear session data for this user
-    updateExpectedAction(userId, null); // Also clear any expected action
+    sessionUtils.updateUserLastAction(userId, null); // Clear session data for this user
+    sessionUtils.updateExpectedAction(userId, null); // Also clear any expected action
 
-    const chains = await getChainList();
-    const pageSize = pageSize;
+    const chains = await repuUtils.getChainList();
+    const pageSize = config.pageSize;
     const keyboard = paginateChains(chains, 0, userId, pageSize);
     await ctx.reply('Please select a chain:', keyboard);
 }
@@ -187,5 +187,4 @@ module.exports = {
     paginateChains,
     resetSessionAndShowChains,
     showTestnets
-  };
-  
+};

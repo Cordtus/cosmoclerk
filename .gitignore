@@ -2,6 +2,3 @@
 node_modules/
 data/
 chain-registry/
-.eslintrc.json
-eslint.config.mjs
-package-lock.json
