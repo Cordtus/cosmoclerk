@@ -173,7 +173,7 @@ async function resetSessionAndShowChains(ctx) {
     sessionUtils.updateUserLastAction(userId, null); // Clear session data for this user
     sessionUtils.updateExpectedAction(userId, null); // Also clear any expected action
 
-    const chains = await repuUtils.getChainList();
+    const chains = await repoUtils.getChainList();
     const pageSize = config.pageSize;
     const keyboard = paginateChains(chains, 0, userId, pageSize);
     await ctx.reply('Please select a chain:', keyboard);

@@ -1,4 +1,5 @@
 // .eslintrc.json
+
 {
     "env": {
       "node": true, // Defines things like `process` and `__dirname` globally

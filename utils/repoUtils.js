@@ -1,11 +1,12 @@
-// repoUtils.js
-
+const { exec } = require('child_process');
+const util = require('util');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 
+const execAsync = util.promisify(exec);
 
-// ensure directory existence
+// Ensure directory existence
 const ensureDirectoryExists = (dirPath) => {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
@@ -13,16 +14,16 @@ const ensureDirectoryExists = (dirPath) => {
   }
 };
 
-// Use exec with promisify for asynchronous execution
-const execAsync = async (command, retries = 3) => {
+// Execute a shell command with retries
+const executeCommand = async (command, retries = 3) => {
   while (retries > 0) {
     try {
-      const { stdout, stderr } = await exec(command);
-      if (stderr) throw new Error(stderr);
+      const { stdout, stderr } = await execAsync(command);
       console.log(stdout);
-      return; // Success, exit the loop
+      if (stderr) throw new Error(stderr);
+      return stdout; // Success, exit the loop
     } catch (error) {
-      console.error(`Attempt failed: ${error}`);
+      console.error(`Attempt failed: ${error.message}`);
       retries -= 1;
       if (retries > 0) console.log(`Retrying... (${retries} attempts left)`);
     }
@@ -39,19 +40,19 @@ const cloneOrUpdateRepo = async () => {
   try {
     if (!fs.existsSync(path.join(repoDir, '.git'))) {
       console.log(`Cloning repository: ${repoUrl}`);
-      await execAsync(`git clone ${repoUrl} "${repoDir}"`, 2); // Allows for 2 retry attempts
+      await executeCommand(`git clone ${repoUrl} "${repoDir}"`, 2);
       console.log('Repository cloned successfully.');
     } else {
       const stats = fs.statSync(path.join(repoDir, '.git'));
       const hoursDiff = (new Date() - stats.mtime) / 3600000;
       if (hoursDiff > staleHours) {
         console.log(`Updating repository in ${repoDir}`);
-        await execAsync(`git -C "${repoDir}" pull`, 2); // Allows for 2 retry attempts
+        await executeCommand(`git -C "${repoDir}" pull`, 2);
         console.log('Repository updated successfully.');
       }
     }
   } catch (error) {
-    console.error(`Error in cloning or updating the repository: ${error}`);
+    console.error(`Error in cloning or updating the repository: ${error.message}`);
     throw error;
   }
 };
@@ -69,24 +70,24 @@ const checkRepoStaleness = async () => {
 
 async function readFileSafely(filePath) {
   try {
-      const data = await readFile(filePath, { encoding: 'utf8' });
-      return JSON.parse(data);
+    const data = fs.readFileSync(filePath, { encoding: 'utf8' });
+    return JSON.parse(data);
   } catch (error) {
-      console.error(`Error reading file ${filePath}:`, error);
-      return null; // Or throw, depending on your error handling strategy
+    console.error(`Error reading file ${filePath}:`, error);
+    return null; // Or throw, depending on your error handling strategy
   }
 }
 
 async function getChainList(subDirectory = '') {
   const directory = path.join(config.repoDir, subDirectory);
   try {
-      const directories = fs.readdirSync(directory, { withFileTypes: true })
-          .filter(dirent => dirent.isDirectory() && !dirent.name.startsWith('_') && !dirent.name.startsWith('.'))
-          .map(dirent => dirent.name);
-      return directories.sort((a, b) => a.localeCompare(b));
+    const directories = fs.readdirSync(directory, { withFileTypes: true })
+        .filter(dirent => dirent.isDirectory() && !dirent.name.startsWith('_') && !dirent.name.startsWith('.'))
+        .map(dirent => dirent.name);
+    return directories.sort((a, b) => a.localeCompare(b));
   } catch (error) {
-      console.error('Error getting chain list:', error);
-      return [];
+    console.error('Error getting chain list:', error);
+    return [];
   }
 }
 
@@ -100,8 +101,10 @@ async function listChains() {
 
 module.exports = {
   cloneOrUpdateRepo,
+  ensureDirectoryExists,
+  executeCommand,
+  checkRepoStaleness,
   readFileSafely,
   getChainList,
-  checkRepoStaleness
+  listChains
 };
-

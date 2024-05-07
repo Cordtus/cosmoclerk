@@ -1,4 +1,7 @@
+.vscode
 .env
 node_modules/
 data/
-chain-registry/
+package-lock.json
+.eslintrc.json
+eslint.config.mjs
