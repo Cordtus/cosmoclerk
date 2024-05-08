@@ -1,4 +1,6 @@
+
 # CosmoClerk
+
 #### A Telegram bot-wrapper for [Cosmos Chain-Registry](https://github.com/cosmos/chain-registry)
 
 ***
@@ -31,7 +33,7 @@ Very interested in sugestions for more specialized feature requests like:<br>
 
 <br>
 
-Currently rebuilding ehtire structure to make expansion possible<br>
+Currently rebuilding entire structure to make expansion possible<br>
 testing bot [may be offline] -- [here](https://t.me/cac_devbot) <br>
 
 <img src="https://github.com/Cordtus/cosmoclerk/assets/96965330/fe0757f0-d98b-43ee-bdcd-4574941858eb" width="600" height="485">
