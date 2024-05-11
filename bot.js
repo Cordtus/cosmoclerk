@@ -2,9 +2,7 @@
 
 require('dotenv').config();
 const { Telegraf } = require('telegraf');
-const sessionUtils = require('./utils/sessionUtils');
 const repoUtils = require('./utils/repoUtils');
-const config = require('./config');
 const registerHandlers = require('./handlers');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);

@@ -1,10 +1,12 @@
 // menuFuncs.js
 
+const path = require('path');
 const { Markup } = require('telegraf');
 const { chainInfo, chainPeerNodes, chainEndpoints, chainBlockExplorers } = require('./chainFuncs');
 const sessionUtils = require('../utils/sessionUtils');
 const repoUtils = require('../utils/repoUtils');
 const config = require('../config');
+
 
 function sendMainMenu(userId) {
     userId = userId.toString();
@@ -47,16 +49,16 @@ async function handleAction(ctx, action, userAction) {
             await chainInfo(ctx, userAction.chain); // Pass only chain to chainInfo
             break;
         case 'peer_nodes':
-            const message = await chainPeerNodes(ctx, userAction.chain); // Pass only chain to chainPeerNodes
+            { const message = await chainPeerNodes(ctx, userAction.chain); // Pass only chain to chainPeerNodes
             await ctx.reply(message, { parse_mode: 'Markdown' });
-            break;
+            break; }
         case 'endpoints':
             await chainEndpoints(ctx, userAction.chain); // Pass only chain to chainEndpoints
             break;
         case 'block_explorers':
-            const explorersMessage = await chainBlockExplorers(ctx, userAction.chain); // Pass only chain to chainBlockExplorers
+            { const explorersMessage = await chainBlockExplorers(ctx, userAction.chain); // Pass only chain to chainBlockExplorers
             await ctx.replyWithMarkdown(explorersMessage);
-            break;
+            break; }
         case 'ibc_id':
             await ctx.reply(`Enter IBC denom for ${userAction.chain}:`, { parse_mode: 'Markdown' });
             break;

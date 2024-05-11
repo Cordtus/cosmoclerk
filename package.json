@@ -26,6 +26,11 @@
   "homepage": "https://github.com/Cordtus/cosmoclerk#readme",
   "devDependencies": {
     "jest": "^29.7.0",
-    "nodemon": "^2.0.22"
+    "nodemon": "^3.1.0"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-fetch": "^2.7.0",
+    "telegraf": "^4.16.3"
   }
 }

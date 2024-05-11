@@ -4,6 +4,7 @@ const repoUtils = require('./utils/repoUtils');
 const sessionUtils = require('./utils/sessionUtils');
 const chainFuncs = require('./funcs/chainFuncs');
 const menuFuncs = require('./funcs/menuFuncs');
+const config = require('./config');
 
 
 
