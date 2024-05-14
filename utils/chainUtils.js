@@ -1,48 +1,36 @@
-// chainUtils.js
-
 const sessionUtils = require('./sessionUtils');
 const coreUtils = require('./coreUtils');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 
-
-function constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddress, evmHttpJsonRpcAddress, blockExplorerUrl) {
-    const baseDenom = chainData.tokens?.[0]?.denom || 'unknown';
-    const decimals = chainData.tokens?.[0]?.decimals || 'unknown';
-
-    const message = `Chain ID: \`${chainData.chain_id}\`\n` +
-        `Chain Name: \`${chainData.chain_name}\`\n` +
-        `RPC: \`${rpcAddress}\`\n` +
-        `REST: \`${restAddress}\`\n` +
-        `Address Prefix: \`${chainData.bech32_prefix}\`\n` +
-        `Base Denom: \`${baseDenom}\`\n` +
-        `Cointype: \`${chainData.slip44}\`\n` +
-        `Decimals: \`${decimals}\`\n` +
-        `Block Explorer: \`${blockExplorerUrl}\``;
-
-    return message;
+function constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddress, evmHttpJsonRpcAddress, blockExplorerUrl, decimals, baseDenom) {
+    return `Chain ID: \`${coreUtils.sanitizeString(chainData.chain_id)}\`\n` +
+           `Chain Name: \`${coreUtils.sanitizeString(chainData.chain_name)}\`\n` +
+           `RPC: \`${coreUtils.sanitizeUrl(rpcAddress)}\`\n` +
+           `REST: \`${coreUtils.sanitizeUrl(restAddress)}\`\n` +
+           `Address Prefix: \`${coreUtils.sanitizeString(chainData.bech32_prefix)}\`\n` +
+           `Base Denom: \`${coreUtils.sanitizeString(baseDenom)}\`\n` +
+           `Cointype: \`${coreUtils.sanitizeString(chainData.slip44)}\`\n` +
+           `Decimals: \`${coreUtils.sanitizeString(decimals)}\`\n` +
+           `Block Explorer: \`${coreUtils.sanitizeUrl(blockExplorerUrl)}\`\n`;
 }
 
-// Query function for CosmWasm contracts
 async function queryCosmWasmContract(chainInfo, contractAddress, query) {
-    const restAddress = sanitizeInput(chainInfo.data.restAddress).replace(/\/+$/, '');
-    contractAddress = validateAddress(contractAddress); // Validate contract address
+    const restAddress = coreUtils.sanitizeUrl(chainInfo.data.restAddress).replace(/\/+$/, '');
+    contractAddress = coreUtils.sanitizeString(contractAddress);
     const queryUrl = `${restAddress}/cosmwasm/wasm/v1/contract/${contractAddress}/smart/${Buffer.from(JSON.stringify(query)).toString('base64')}`;
-    return await fetchJson(queryUrl);
+    return await coreUtils.fetchJson(queryUrl);
 }
 
-// Function to sort and find preferred blockchain explorer
 function findPreferredExplorer(explorers) {
     if (!explorers || explorers.length === 0) return "Unknown";
 
-    // Strip common prefixes for comparison purposes
     function stripPrefixes(name) {
         return name.replace(/^(http:\/\/|https:\/\/)?(www\.)?/, '');
     }
 
-    // Define preference order
-    const preferredOrder = ['m', 'c']; // Sort preference by these letters
+    const preferredOrder = ['m', 'c'];
 
     const sortedExplorers = explorers.map(explorer => {
         return {
@@ -67,24 +55,24 @@ function findPreferredExplorer(explorers) {
 
 const formatBlockExplorers = (explorers) => {
     if (!explorers || explorers.length === 0) return 'No block explorer data available.';
-    
+
     const formattedExplorers = explorers.map(explorer => {
-        const name = `*${sanitizeString(explorer.kind)}*`;
-        const url = `\`${sanitizeUrl(explorer.url)}\``;
+        const name = `*${coreUtils.sanitizeString(explorer.kind)}*`;
+        const url = `\`${coreUtils.sanitizeUrl(explorer.url)}\``;
         return `${name}:\n${url}\n`;
     }).join('\n');
-    
+
     const preferredExplorerUrl = findPreferredExplorer(explorers);
-    const preferredExplorer = explorers.find(explorer => sanitizeUrl(explorer.url) === preferredExplorerUrl);
-    
+    const preferredExplorer = explorers.find(explorer => coreUtils.sanitizeUrl(explorer.url) === preferredExplorerUrl);
+
     const preferredExplorerSection = preferredExplorer ? `*Preferred Explorer*\n${'-'.repeat('Preferred Explorer'.length)}\n${formatService(preferredExplorer)}\n\n` : '';
-    
+
     return `${preferredExplorerSection}${formattedExplorers}`;
 };
 
 async function processPoolType(ctx, restAddress, poolId, chain) {
     const poolTypeUrl = `${restAddress}/osmosis/gamm/v1beta1/pools/${poolId}`;
-    const poolTypeData = await fetchJson(poolTypeUrl);
+    const poolTypeData = await coreUtils.fetchJson(poolTypeUrl);
     const poolType = poolTypeData.pool["@type"];
 
     if (poolType.includes("/osmosis.gamm.v1beta1.Pool") || poolType.includes("/osmosis.gamm.poolmodels.stableswap.v1beta1.Pool")) {
@@ -98,7 +86,7 @@ async function processPoolType(ctx, restAddress, poolId, chain) {
 
 async function handleGammPoolType(ctx, poolId, restAddress) {
     const url = `http://jasbanza.dedicated.co.za:7000/pool/${poolId}`;
-    const rawData = await fetch(url);
+    const rawData = await coreUtils.fetch(url);
     const jsonMatch = rawData.match(/<pre>([\s\S]*?)<\/pre>/);
     if (!jsonMatch || jsonMatch.length < 2) {
         throw new Error("No valid JSON found in the server's response.");
@@ -112,7 +100,7 @@ async function translateIncentiveDenoms(ctx, data) {
         for (const coin of incentive.coins) {
             if (coin.denom.startsWith('ibc/')) {
                 const ibcId = coin.denom.split('/')[1];
-                coin.denom = await ibcId(ctx, ibcId, true);
+                coin.denom = await coreUtils.ibcId(ctx, ibcId, true);
             }
         }
     }
@@ -122,7 +110,7 @@ async function translateIncentiveDenoms(ctx, data) {
 
 async function handleConcentratedLiquidityPoolType(ctx, restAddress, poolId) {
     const url = `${restAddress}/osmosis/concentratedliquidity/v1beta1/incentive_records?pool_id=${poolId}`;
-    const data = await fetchJson(url);
+    const data = await coreUtils.fetchJson(url);
     if (!data.incentive_records || data.incentive_records.length === 0) {
         ctx.reply('No incentives found.');
         return;
@@ -157,25 +145,16 @@ function formatIncentives(record) {
 }
 
 function calculateTimeRemaining(startTime) {
-    // time remaining until incentives end
     const start = new Date(startTime);
     const now = new Date();
     const timeDiff = start.getTime() - now.getTime();
-    
-    // convert tfrom ms to days
     const daysRemaining = Math.floor(timeDiff / (1000 * 3600 * 24));
-
-    // if calculated days are negative, start time has passed
-    if (daysRemaining < 0) {
-        return "Incentive period has ended";
-    }
-
-    return `${daysRemaining} days remaining`;
+    return daysRemaining < 0 ? "Incentive period has ended" : `${daysRemaining} days remaining`;
 }
 
 async function handleChainInfo(ctx, userAction) {
     try {
-        const chainInfoResult = await chainInfo(ctx, userAction.chain);
+        const chainInfoResult = await chainFuncs.chainInfo(ctx, userAction.chain);
         if (chainInfoResult && chainInfoResult.message) {
             await ctx.reply(chainInfoResult.message, {
                 parse_mode: 'Markdown',
@@ -201,11 +180,10 @@ async function denomTracePoolIncentives(ctx, incentivesData, chain) {
             if (coin.denom.startsWith('ibc/')) {
                 const ibcId = coin.denom.split('/')[1];
                 try {
-                    const baseDenom = await ibcId(ctx, ibcId, chain, true);
+                    const baseDenom = await coreUtils.ibcId(ctx, ibcId, chain, true);
                     coin.denom = baseDenom || coin.denom;
                 } catch (error) {
                     console.error('Error translating IBC denom:', coin.denom, error);
-                    // Optionally handle the error by skipping this coin or using a default value
                 }
             }
         }
@@ -249,28 +227,31 @@ function formatPoolIncentivesResponse(data) {
 }
 
 const formatPeers = (peers, title) => {
-    if (!peers || peers.length === 0) return `*${title}*\nNo data available\n\n`;
+    if (!peers || peers.length === 0) return `*${title}*\nNo data available`;
+
     const formattedPeers = peers.map(peer => {
-        const provider = `*${sanitizeString(peer.provider)}*`;
-        const id = peer.id ? `id: \`${peer.id}\`` : 'id: unavailable';
-        const address = peer.address ? `URL: \`${sanitizeUrl(peer.address)}\`` : 'URL: unavailable';
-        return `\n${provider}:\n ${id}\n ${address}`;
-    }).join("\n");
-    return `*${title}*\n${'-'.repeat(title.length)}\n${formattedPeers}\n\n`;
+        // Regex to extract hostname and port, assuming address in 'host:port' format
+        const match = peer.address.match(/([^:]+)(?::(\d+))?$/);
+        const address = match ? match[1] : 'unknown';
+        const port = match ? match[2] : 'unknown';
+        return `${coreUtils.sanitizeString(peer.provider)}\n\`${peer.id}@${address}:${port}\``; // format as 'id@address:port'
+    }).join('\n\n');
+
+    return `*${title}*\n\n${formattedPeers}`;
 };
 
-const formatService = (service) => {
-    const provider = `*${sanitizeString(service.provider)}*`;
-    const address = `\`${sanitizeUrl(service.address)}\``;
+function formatService(service) {
+    const provider = `*${coreUtils.sanitizeString(service.provider.replace(/[^\w\s.-]/g, '').replace(/\./g, '_'))}*`;
+    const address = `\`${coreUtils.sanitizeUrl(service.address.replace(/\/$/, '').replace(/_/g, '\\_'))}\``;
     return `${provider}:\n${address}\n`;
-};
+}
 
-const formatEndpoints = (services, title, maxEndpoints) => {
+function formatEndpoints(services, title, maxEndpoints) {
     if (!services || services.length === 0) {
         return `*${title}*\nNo data available\n`;
     }
     return services.slice(0, maxEndpoints).map(formatService).join("\n");
-};
+}
 
 async function formatPoolInfo(ctx, poolData, chain) {
     if (!poolData || !poolData.pool) {
@@ -280,11 +261,9 @@ async function formatPoolInfo(ctx, poolData, chain) {
     let formattedResponse = '';
     const poolType = poolData.pool["@type"];
 
-    // Fetching the chain info
-    const chainInfoResult = await chainInfo(ctx, chain);
+    const chainInfoResult = await chainFuncs.chainInfo(ctx, chain);
     console.log('chainInfoResult:', chainInfoResult);
 
-    // Check if chainInfoResult has the expected structure and contains necessary data
     if (!chainInfoResult || typeof chainInfoResult !== 'object' || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
         console.error('chainInfoResult is not structured as expected or missing necessary data:', chainInfoResult);
         return 'Error: Failed to retrieve or validate chain information. Please check the server logs for details.';
@@ -292,43 +271,36 @@ async function formatPoolInfo(ctx, poolData, chain) {
 
     try {
         if (poolType.includes("/osmosis.gamm.v1beta1.Pool") || poolType.includes("/osmosis.gamm.poolmodels.stableswap.v1beta1.Pool")) {
-            // Gamm pool formatting
             formattedResponse += `Pool Type: Gamm Pool\n`;
-            formattedResponse += `ID: ${poolData.pool.id}\n`;
-            formattedResponse += `Address: ${poolData.pool.address}\n`;
-            formattedResponse += `Swap Fee: ${poolData.pool.pool_params.swap_fee}\n`;
-            formattedResponse += `Exit Fee: ${poolData.pool.pool_params.exit_fee}\n`;
+            formattedResponse += `ID: ${coreUtils.sanitizeString(poolData.pool.id)}\n`;
+            formattedResponse += `Address: ${coreUtils.sanitizeString(poolData.pool.address)}\n`;
+            formattedResponse += `Swap Fee: ${coreUtils.sanitizeString(poolData.pool.pool_params.swap_fee)}\n`;
+            formattedResponse += `Exit Fee: ${coreUtils.sanitizeString(poolData.pool.pool_params.exit_fee)}\n`;
 
             for (const asset of poolData.pool.pool_assets) {
-                const baseDenom = await queryIbcId(ctx, asset.token.denom.split('/')[1], chain, true);
-                formattedResponse += `Token: ${baseDenom || asset.token.denom}\n`;
-                formattedResponse += `[denom:\`${asset.token.denom}\`]\n`;
+                const baseDenom = await queryIbcId(ctx, coreUtils.sanitizeString(asset.token.denom.split('/')[1]), chain, true);
+                formattedResponse += `Token: ${baseDenom || coreUtils.sanitizeString(asset.token.denom)}\n`;
+                formattedResponse += `[denom:\`${coreUtils.sanitizeString(asset.token.denom)}\`]\n`;
             }
         } else if (poolType.includes("/osmosis.concentratedliquidity.v1beta1.Pool")) {
-            // Concentrated liquidity pool formatting
             formattedResponse += `Pool Type: Concentrated Liquidity Pool\n`;
-            formattedResponse += `ID: ${poolData.pool.id}\n`;
-            formattedResponse += `Address: ${poolData.pool.address}\n`;
-            formattedResponse += `Swap Fee: ${poolData.pool.spread_factor}\n`;
+            formattedResponse += `ID: ${coreUtils.sanitizeString(poolData.pool.id)}\n`;
+            formattedResponse += `Address: ${coreUtils.sanitizeString(poolData.pool.address)}\n`;
+            formattedResponse += `Swap Fee: ${coreUtils.sanitizeString(poolData.pool.spread_factor)}\n`;
 
-            const tokens = [poolData.pool.token0, poolData.pool.token1];
+            const tokens = [coreUtils.sanitizeString(poolData.pool.token0), coreUtils.sanitizeString(poolData.pool.token1)];
             for (const token of tokens) {
                 const baseDenom = await queryIbcId(ctx, token.split('/')[1], chain, true);
-                formattedResponse += `Token: ${baseDenom || token}\n`;
+                formattedResponse += `Token: ${baseDenom || coreUtils.sanitizeString(token)}\n`;
             }
         } else if (poolType.includes("/osmosis.cosmwasmpool.v1beta1.CosmWasmPool")) {
-            const contractAddress = poolData.pool.contract_address;
-
-            // Correctly using chainInfoResult.data for the query
+            const contractAddress = coreUtils.sanitizeString(poolData.pool.contract_address);
             const configResponse = await queryCosmWasmContract(ctx, chainInfoResult.data.restAddress, contractAddress, {"get_config": {}});
             const swapFeeResponse = await queryCosmWasmContract(ctx, chainInfoResult.data.restAddress, contractAddress, {"get_swap_fee": {}});
             const totalLiquidityResponse = await queryCosmWasmContract(ctx, chainInfoResult.data.restAddress, contractAddress, {"get_total_pool_liquidity": {}});
-
-
-            // Constructing the formatted response
-            formattedResponse += `Pool Type: CosmWasm Pool\nContract Address: ${contractAddress}\nSwap Fee: ${swapFeeResponse.swap_fee}\nConfig: ${JSON.stringify(configResponse)}\n`;
+            formattedResponse += `Pool Type: CosmWasm Pool\nContract Address: ${coreUtils.sanitizeString(contractAddress)}\nSwap Fee: ${coreUtils.sanitizeString(swapFeeResponse.swap_fee)}\nConfig: ${JSON.stringify(configResponse)}\n`;
             totalLiquidityResponse.total_pool_liquidity.forEach(asset => {
-                formattedResponse += `Token: ${asset.denom}\nAmount: ${asset.amount}\n`;
+                formattedResponse += `Token: ${coreUtils.sanitizeString(asset.denom)}\nAmount: ${coreUtils.sanitizeString(asset.amount)}\n`;
             });
         } else {
             return 'Unsupported pool type or format.';

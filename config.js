@@ -9,9 +9,9 @@ const config = {
     staleHours: staleHours,
     updateInterval: staleHours * 3600000, // Convert hours to milliseconds
     sessionExpirationThreshold: parseInt(process.env.SESSION_EXPIRATION_THRESHOLD, 10) || 3600000, // 1 hour
-    cleanupInterval: parseInt(process.env.CLEANUP_INTERVAL, 10) || 600000, // 10 minutes
+    cleanupInterval: parseInt(process.env.CLEANUP_INTERVAL, 10) || 1200000, // 20 minutes
     dnsTimeout: parseInt(process.env.DNS_TIMEOUT, 10) || 2000, // DNS lookup timeout in milliseconds
     fetchTimeout: parseInt(process.env.FETCH_TIMEOUT, 10) || 12000, // Fetch timeout in milliseconds
 };
 
-module.exports = config;
+module.exports = config, staleHours;
