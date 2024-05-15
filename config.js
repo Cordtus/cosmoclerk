@@ -14,4 +14,4 @@ const config = {
     fetchTimeout: parseInt(process.env.FETCH_TIMEOUT, 10) || 12000, // Fetch timeout in milliseconds
 };
 
-module.exports = config, staleHours;
+module.exports = config;

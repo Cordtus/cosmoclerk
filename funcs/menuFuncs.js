@@ -1,6 +1,6 @@
 const path = require('path');
 const { Markup } = require('telegraf');
-const { chainInfo, chainPeerNodes, chainEndpoints, chainBlockExplorers, ibcIdFormatted, ibcIdRaw } = require('./chainFuncs');
+const { chainInfo, chainPeerNodes, chainEndpoints, chainBlockExplorers, ibcIdFormatted, ibcIdRaw, poolInfo, poolIncentives, walletBalances } = require('./chainFuncs');
 const { getUserLastAction, updateUserLastAction, updateExpectedAction, clearUserSession } = require('../utils/sessionUtils');
 const { getChainList, getTestnetsList } = require('../utils/repoUtils');
 const config = require('../config');
@@ -39,27 +39,16 @@ async function handleMainMenuAction(ctx, action) {
     try {
         switch (action) {
             case 'chain_info':
-                const chainInfoResult = await chainInfo(ctx, userAction.chain);
-                if (chainInfoResult && chainInfoResult.message) {
-                    await ctx.reply(chainInfoResult.message, {
-                        parse_mode: 'Markdown',
-                        disable_web_page_preview: true,
-                    });
-                } else {
-                    console.error('Unexpected result from chainInfo:', chainInfoResult);
-                    await ctx.reply('Failed to fetch chain info.');
-                }
+                await chainInfo(ctx, userAction.chain);
                 break;
             case 'peer_nodes':
-                const peerNodesMessage = await chainPeerNodes(ctx, userAction.chain);
-                await ctx.reply(peerNodesMessage, { parse_mode: 'Markdown' });
+                await chainPeerNodes(ctx, userAction.chain);
                 break;
             case 'endpoints':
                 await chainEndpoints(ctx, userAction.chain);
                 break;
             case 'block_explorers':
-                const blockExplorersMessage = await chainBlockExplorers(ctx, userAction.chain);
-                await ctx.replyWithMarkdown(blockExplorersMessage);
+                await chainBlockExplorers(ctx, userAction.chain);
                 break;
             case 'ibc_id':
                 await ctx.reply(`Enter IBC denom for ${userAction.chain}:`, { parse_mode: 'Markdown' });

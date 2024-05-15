@@ -1,10 +1,68 @@
 const { readFile } = require('fs').promises;
 const path = require('path');
-const fetch = require('node-fetch');
-const chainUtils = require('../utils/chainUtils');
 const coreUtils = require('../utils/coreUtils');
+const chainUtils = require('../utils/chainUtils');
 const { getUserLastAction, getHealthyEndpoints, setHealthyEndpoints } = require('../utils/sessionUtils');
 const config = require('../config');
+const fetch = require('node-fetch');
+
+async function findHealthyEndpoint(ctx, chainData, type) {
+    const apis = chainData.apis?.[type];
+    if (!apis || apis.length === 0) {
+        console.log(`No ${type} endpoints found for chain`);
+        return "Unknown";
+    }
+
+    for (const api of apis) {
+        const url = api.address;
+        const isHealthy = await coreUtils.checkNodeHealth(url, type);
+        if (isHealthy) {
+            console.log(`Healthy ${type} endpoint found: ${url}`);
+            return url;
+        }
+    }
+    console.log(`No healthy ${type} endpoints found for chain`);
+    return "Unknown";
+}
+
+async function fetchIbcDenomTrace(restAddresses, ibcHash) {
+    const urls = restAddresses.map(address => `${address.replace(/\/+$/, '')}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`);
+    return await coreUtils.fetchWithRetry(urls);
+}
+
+async function ibcIdFormatted(ctx, ibcHash, chain) {
+    const cachedEndpoints = getHealthyEndpoints(chain);
+    if (!cachedEndpoints || !cachedEndpoints.rest) {
+        throw new Error(`No healthy REST endpoint available for chain ${chain}`);
+    }
+
+    const restAddresses = cachedEndpoints.rest.split(',');
+    try {
+        const denomTrace = await fetchIbcDenomTrace(restAddresses, ibcHash);
+        const message = `Denom: ${chainUtils.sanitizeString(denomTrace.base_denom)}\nPath: ${chainUtils.sanitizeString(denomTrace.path)}`;
+        ctx.reply(message);
+        return denomTrace.base_denom;
+    } catch (error) {
+        ctx.reply('Error fetching IBC denom trace. Please try again.');
+        throw new Error('Error fetching IBC denom trace.');
+    }
+}
+
+async function ibcIdRaw(ctx, ibcHash, chain) {
+    const cachedEndpoints = getHealthyEndpoints(chain);
+    if (!cachedEndpoints || !cachedEndpoints.rest) {
+        throw new Error(`No healthy REST endpoint available for chain ${chain}`);
+    }
+
+    const restAddresses = cachedEndpoints.rest.split(',');
+    try {
+        const denomTrace = await fetchIbcDenomTrace(restAddresses, ibcHash);
+        return denomTrace;
+    } catch (error) {
+        ctx.reply('Error fetching IBC denom trace. Please try again.');
+        return null;
+    }
+}
 
 async function checkChainHealth(ctx, chain) {
     console.log(`[${new Date().toISOString()}] Checking health for chain: ${chain}`);
@@ -23,8 +81,8 @@ async function checkChainHealth(ctx, chain) {
         } else {
             console.log(`No cached endpoints for chain: ${chain}, checking health...`);
             cachedEndpoints = {
-                rpc: await coreUtils.findHealthyEndpoint(ctx, chainData, 'rpc'),
-                rest: await coreUtils.findHealthyEndpoint(ctx, chainData, 'rest')
+                rpc: await findHealthyEndpoint(ctx, chainData, 'rpc'),
+                rest: await findHealthyEndpoint(ctx, chainData, 'rest')
             };
             setHealthyEndpoints(chain, cachedEndpoints);
         }
@@ -59,20 +117,21 @@ async function chainInfo(ctx, chain) {
             throw new Error(`Data for ${chain} is missing or corrupt.`);
         }
 
-        // Use cached endpoints
-        const cachedEndpoints = getHealthyEndpoints(chain);
-        if (!cachedEndpoints) {
-            throw new Error('No cached endpoints found.');
+        // Call checkChainHealth to ensure healthy endpoints are cached
+        const healthyEndpoints = await checkChainHealth(ctx, chain);
+
+        if (!healthyEndpoints) {
+            throw new Error('No healthy endpoints found.');
         }
 
         const baseDenom = chainData.staking?.staking_tokens?.[0]?.denom || "Unknown";
         const nativeDenomExponent = assetData.assets?.[0]?.denom_units?.slice(-1)[0];
         const decimals = nativeDenomExponent ? nativeDenomExponent.exponent : "Unknown";
-        const rpcAddress = cachedEndpoints.rpc;
-        const restAddress = cachedEndpoints.rest;
+        const rpcAddress = healthyEndpoints.rpc;
+        const restAddress = healthyEndpoints.rest;
         const grpcAddress = chainData.apis?.grpc?.find(api => api.address)?.address || "Unknown";
         const evmHttpJsonRpcAddress = chainData.apis?.['evm-http-jsonrpc']?.find(api => api.address)?.address || "Unknown";
-        const blockExplorerUrl = coreUtils.findPreferredExplorer(chainData.explorers);
+        const blockExplorerUrl = chainUtils.findPreferredExplorer(chainData.explorers);
 
         const healthWarning = (rpcAddress === "Unknown" && restAddress === "Unknown") ? "\nWarning: RPC and REST endpoints may be out of sync or offline." : "";
         const message = chainUtils.constructChainInfoMessage(chainData, rpcAddress, restAddress, grpcAddress, evmHttpJsonRpcAddress, blockExplorerUrl, decimals, baseDenom) + healthWarning;
@@ -259,7 +318,7 @@ async function walletBalances(ctx, chain, walletAddress) {
         return;
     }
 
-    const restAddress = await coreUtils.findHealthyEndpoint(ctx, chainData, 'rest');
+    const restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, '');
     const url = `${restAddress}/cosmos/bank/v1beta1/balances/${walletAddress}`;
 
     try {
@@ -288,56 +347,6 @@ async function walletBalances(ctx, chain, walletAddress) {
     } catch (error) {
         console.error('Error fetching wallet balances:', error);
         ctx.reply('Error fetching wallet balances. Please try again.');
-    }
-}
-
-async function fetchIbcDenomTrace(restAddress, ibcHash) {
-    const url = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcHash}`;
-    try {
-        const response = await fetch(url);
-        const data = await response.json();
-        if (data.denom_trace) {
-            return data.denom_trace;
-        } else {
-            throw new Error('No IBC Denom Trace found.');
-        }
-    } catch (error) {
-        console.error('Error fetching IBC denom trace:', error);
-        throw error;
-    }
-}
-
-async function ibcIdFormatted(ctx, ibcHash, chain) {
-    const cachedEndpoints = getHealthyEndpoints(chain);
-    if (!cachedEndpoints || !cachedEndpoints.rest) {
-        throw new Error(`No healthy REST endpoint available for chain ${chain}`);
-    }
-
-    const restAddress = cachedEndpoints.rest.replace(/\/+$/, '');
-    try {
-        const denomTrace = await fetchIbcDenomTrace(restAddress, ibcHash);
-        const message = `IBC Denom Trace: \nBase Denom: ${coreUtils.sanitizeString(denomTrace.base_denom)}\nPath: ${coreUtils.sanitizeString(denomTrace.path)}`;
-        ctx.reply(message);
-        return denomTrace.base_denom;
-    } catch (error) {
-        ctx.reply('Error fetching IBC denom trace. Please try again.');
-        throw new Error('Error fetching IBC denom trace.');
-    }
-}
-
-async function ibcIdRaw(ctx, ibcHash, chain) {
-    const cachedEndpoints = getHealthyEndpoints(chain);
-    if (!cachedEndpoints || !cachedEndpoints.rest) {
-        throw new Error(`No healthy REST endpoint available for chain ${chain}`);
-    }
-
-    const restAddress = cachedEndpoints.rest.replace(/\/+$/, '');
-    try {
-        const denomTrace = await fetchIbcDenomTrace(restAddress, ibcHash);
-        return denomTrace;
-    } catch (error) {
-        ctx.reply('Error fetching IBC denom trace. Please try again.');
-        return null;
     }
 }
 

@@ -6,10 +6,17 @@ const menuFuncs = require('./funcs/menuFuncs');
 const config = require('./config');
 
 function registerHandlers(bot) {
-    bot.start((ctx) => {
+    bot.start(async (ctx) => {
         const userId = ctx.from.id.toString();
         updateUserLastAction(userId, { action: 'start' });
-        ctx.reply('Welcome! Use /menu to get started.');
+
+        // Check if the repo data is stale and refresh if necessary
+        await repoUtils.cloneOrUpdateRepo();
+
+        // Generate the list of chains
+        const chains = await repoUtils.getChainList();
+        const keyboardMarkup = menuFuncs.paginateChains(chains, 0, userId, config.pageSize);
+        await ctx.reply('Please select a chain:', keyboardMarkup);
     });
 
     bot.command('menu', async (ctx) => {
@@ -34,14 +41,34 @@ function registerHandlers(bot) {
         await ctx.reply('Select a chain:', keyboardMarkup);
     });
 
+    bot.command('update_repo', async (ctx) => {
+        await repoUtils.cloneOrUpdateRepo();
+        await ctx.reply('Repository updated.');
+    });
+
+    bot.command('show_testnets', async (ctx) => {
+        await menuFuncs.showTestnets(ctx);
+    });
+
     bot.action(/select_chain:(.+)/, async (ctx) => {
         const chainName = ctx.match[1];
         const userId = ctx.from.id.toString();
         updateUserLastAction(userId, { chain: chainName });
+
+        // Check endpoints health when chain is selected and cache chain info
+        const chainInfoResult = await chainFuncs.checkChainHealth(ctx, chainName);
+        if (!chainInfoResult) {
+            await ctx.reply('Error: Unable to fetch chain health. Please select another chain.');
+            return;
+        }
+
+        // Cache the chain info for further functions
+        await chainFuncs.chainInfo(ctx, chainName);
+
         await ctx.answerCallbackQuery();
-        await chainFuncs.checkChainHealth(ctx, chainName); // Check endpoints health when chain is selected
         await ctx.reply(`${chainName} selected. Please choose an option from the menu.`, menuFuncs.sendMainMenu(ctx, userId));
     });
+
 
     bot.action(/page:(\d+)/, async (ctx) => {
         try {

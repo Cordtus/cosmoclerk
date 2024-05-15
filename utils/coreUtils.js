@@ -1,6 +1,49 @@
 const dns = require('dns');
 const fetch = require('node-fetch');
 
+
+async function fetchWithRetry(urls, options = {}, maxAttempts = 3) {
+    let attempt = 0;
+
+    while (attempt < maxAttempts) {
+        for (const url of urls) {
+            try {
+                const response = await fetch(url, options);
+                if (!response.ok) {
+                    throw new Error(`Request failed with status ${response.status}`);
+                }
+                return await response.json();
+            } catch (error) {
+                console.error(`Error fetching URL ${url}: ${error.message}`);
+            }
+        }
+        attempt++;
+        console.log(`Retrying... Attempt ${attempt}`);
+    }
+
+    throw new Error(`Failed to fetch after ${maxAttempts} attempts.`);
+}
+
+async function checkNodeHealth(url, type) {
+    try {
+        const healthCheckUrl = type === 'rpc' ? `${url}/status` : `${url}/cosmos/base/tendermint/v1beta1/blocks/latest`;
+        const response = await fetch(healthCheckUrl);
+        if (!response.ok) {
+            throw new Error(`Health check failed with status ${response.status}`);
+        }
+        const data = await response.json();
+
+        const latestBlockTime = type === 'rpc' ? new Date(data.result.sync_info.latest_block_time) : new Date(data.block.header.time);
+        const now = new Date();
+        if ((now - latestBlockTime) / 1000 < 60) {
+            return true;
+        }
+    } catch (error) {
+        console.error(`Error checking health for URL ${url}: ${error.message}`);
+    }
+    return false;
+}
+
 async function isHostReachable(host) {
     return new Promise((resolve) => {
         dns.lookup(host, (err) => {
@@ -99,6 +142,8 @@ function findPreferredExplorer(explorers) {
 }
 
 module.exports = {
+    fetchWithRetry,
+    checkNodeHealth,
     isHostReachable,
     isEndpointHealthy,
     findHealthyEndpoint,
