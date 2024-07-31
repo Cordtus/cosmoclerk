@@ -1,7 +1,37 @@
-.vscode
-.env
+# Dependencies
 node_modules/
-data/
-package-lock.json
-.eslintrc.json
-eslint.config.mjs
+
+# Build output
+dist/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Editor directories and files
+.vscode/*
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Yarn
+.yarn/*
+!.yarn/patches
+!.yarn/releases
+!.yarn/plugins
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+
+# Test coverage
+coverage/

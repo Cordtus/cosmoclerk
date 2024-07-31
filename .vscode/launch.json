@@ -1,15 +1,20 @@
 {
-    "version": "0.2.0",
-    "configurations": [
-      {
-        "type": "node",
-        "request": "launch",
-        "name": "Launch Program",
-        "skipFiles": [
-          "<node_internals>/**"
-        ],
-        "program": "${workspaceFolder}/bot.js"
-      }
-    ]
-  }
-  
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "node",
+      "request": "launch",
+      "name": "Debug TypeScript",
+      "program": "${workspaceFolder}/src/index.ts",
+      "preLaunchTask": "tsc: build - tsconfig.json",
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
+      "env": {
+        "NODE_ENV": "development"
+      },
+      "console": "integratedTerminal",
+      "sourceMaps": true,
+      "smartStep": true,
+      "internalConsoleOptions": "neverOpen"
+    }
+  ]
+}
