@@ -1,7 +1,7 @@
 import { Context } from "telegraf";
-import { getChainRpcEndpoints } from "../utils/getChainRpcEndpoints";
-import { getChainExplorers } from "../utils/getChainExplorers";
-import { logUserAction } from "../utils/logUserAction";
+import { getChainRpcEndpoints } from "../chainUtils/getChainRpcEndpoints";
+import { getChainExplorers } from "../chainUtils/getChainExplorers";
+import { logUserAction } from "../botUtils/logUserAction";
 
 export async function sendChainDetails(ctx: Context, chain: string): Promise<void> {
   const userId = ctx.from?.id;

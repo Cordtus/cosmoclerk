@@ -1,6 +1,6 @@
 import { Context } from "telegraf";
-import { listAvailableChains } from "../utils/listAvailableChains";
-import { logUserAction } from "../utils/logUserAction";
+import { listAvailableChains } from "../botUtils/listAvailableChains";
+import { logUserAction } from "../botUtils/logUserAction";
 
 export async function sendAvailableChains(ctx: Context, includeTestnets: boolean = false): Promise<void> {
   const userId = ctx.from?.id;

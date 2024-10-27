@@ -1,6 +1,6 @@
 import { Context } from "telegraf";
-import { getChainPeers } from "../utils/getChainPeers";
-import { logUserAction } from "../utils/logUserAction";
+import { getChainPeers } from "../botUtils/getChainPeers";
+import { logUserAction } from "../botUtils/logUserAction";
 
 export async function sendChainPeers(ctx: Context, chain: string): Promise<void> {
   const userId = ctx.from?.id;

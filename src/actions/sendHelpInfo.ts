@@ -1,5 +1,5 @@
 import { Context } from "telegraf";
-import { logUserAction } from "../utils/logUserAction";
+import { logUserAction } from "../botUtils/logUserAction";
 
 export async function sendHelpInfo(ctx: Context): Promise<void> {
   const userId = ctx.from?.id;

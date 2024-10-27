@@ -1,6 +1,6 @@
 import { Context } from "telegraf";
-import { getChainGovernanceDetails } from "../utils/getChainGovernanceDetails";
-import { logUserAction } from "../utils/logUserAction";
+import { getChainGovernanceDetails } from "../chainUtils/getChainGovernanceDetails";
+import { logUserAction } from "../botUtils/logUserAction";
 
 export async function sendGovernanceDetails(ctx: Context, chain: string): Promise<void> {
   const userId = ctx.from?.id;

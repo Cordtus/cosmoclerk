@@ -4,11 +4,19 @@
     "module": "ESNext",
     "moduleResolution": "node",
     "strict": true,
+    "strictPropertyInitialization": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "./dist"
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "paths": {
+      "@chainUtils/*": ["src/chainUtils/*"],
+      "@botUtils/*": ["src/botUtils/*"],
+      "@actions/*": ["src/actions/*"],
+      "@commands/*": ["src/commands/*"]
+    }
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "dist", "**/__tests__/*"]
 }

@@ -1,7 +1,7 @@
 import { Context } from "telegraf";
 import { getUserLastAction } from "../sessionManager/userSessions";
-import { logUserAction } from "../utils/logUserAction";
-import { getCachedUserPreferences, cacheUserPreferences } from "../utils/cacheUserPreferences";
+import { logUserAction } from "../botUtils/logUserAction";
+import { getCachedUserPreferences, cacheUserPreferences } from "../botUtils/cacheUserPreferences";
 
 export async function listUserChains(ctx: Context): Promise<void> {
   const userId = ctx.from?.id;

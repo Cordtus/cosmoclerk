@@ -1,5 +1,5 @@
 import { Context } from "telegraf";
-import { queryPointer } from "../utils/queryPointer";
+import { queryPointer } from "../chainUtils/queryPointer";
 
 export async function handlePointerLookup(ctx: Context, input: string): Promise<void> {
   try {

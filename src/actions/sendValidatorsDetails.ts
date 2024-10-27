@@ -1,6 +1,6 @@
 import { Context } from "telegraf";
-import { getValidatorsList } from "../utils/getValidatorsList";
-import { logUserAction } from "../utils/logUserAction";
+import { getValidatorsList } from "../chainUtils/getValidatorsList";
+import { logUserAction } from "../botUtils/logUserAction";
 
 export async function sendValidatorsDetails(ctx: Context, chain: string): Promise<void> {
   const userId = ctx.from?.id;

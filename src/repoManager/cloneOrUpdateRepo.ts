@@ -1,6 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
-import { execPromise } from "../utils/execPromise";
+import { execPromise } from "../botUtils/execPromise";
 
 const REPO_URL = "https://github.com/cosmos/chain-registry.git";
 const REPO_DIR = path.join(__dirname, "../../chain-registry1");

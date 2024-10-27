@@ -1,7 +1,7 @@
 import { Context } from "telegraf";
 import { resetUserSession } from "../sessionManager/userSessions";
-import { getChainList } from "../utils/getChainList";
-import { paginateChains } from "../utils/paginateChains";
+import { getChainList } from "../chainUtils/getChainList";
+import { paginateChains } from "../botUtils/paginateChains";
 
 export async function resetSessionAndShowChains(ctx: Context): Promise<void> {
   const userId = ctx.from?.id;

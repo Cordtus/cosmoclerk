@@ -1,6 +1,6 @@
 import { Context } from "telegraf";
 import { updateUserLastAction } from "../sessionManager/userSessions";
-import { getChainInfo } from "../utils/getChainInfo";
+import { getChainInfo } from "../chainUtils/getChainInfo";
 
 export async function handleChainSelection(ctx: Context, chain: string): Promise<void> {
   const userId = ctx.from?.id;

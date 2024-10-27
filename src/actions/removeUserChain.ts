@@ -1,6 +1,6 @@
 import { Context } from "telegraf";
 import { getUserLastAction, updateUserLastAction } from "../sessionManager/userSessions";
-import { logUserAction } from "../utils/logUserAction";
+import { logUserAction } from "../botUtils/logUserAction";
 
 export async function removeUserChain(ctx: Context, chain: string): Promise<void> {
   const userId = ctx.from?.id;

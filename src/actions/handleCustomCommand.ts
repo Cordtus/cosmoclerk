@@ -1,6 +1,6 @@
 import { Context } from "telegraf";
-import { validateUserInput } from "../utils/validateUserInput";
-import { logUserAction } from "../utils/logUserAction";
+import { validateUserInput } from "../botUtils/validateUserInput";
+import { logUserAction } from "../botUtils/logUserAction";
 import { sendChainDetails } from "./sendChainDetails";
 
 export async function handleCustomCommand(ctx: Context, command: string, parameter: string): Promise<void> {

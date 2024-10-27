@@ -1,6 +1,6 @@
 import { Context } from "telegraf";
-import { getNetworkStatus } from "../utils/getNetworkStatus";
-import { logUserAction } from "../utils/logUserAction";
+import { getNetworkStatus } from "../chainUtils/getNetworkStatus";
+import { logUserAction } from "../botUtils/logUserAction";
 
 export async function sendNetworkStatus(ctx: Context, rpcUrl: string): Promise<void> {
   const userId = ctx.from?.id;

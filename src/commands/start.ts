@@ -1,6 +1,6 @@
 import { Context } from "telegraf";
-import { getChainList } from "../utils/getChainList";
-import { paginateChains } from "../utils/paginateChains";
+import { getChainList } from "../chainUtils/getChainList";
+import { paginateChains } from "../botUtils/paginateChains";
 import { resetUserSession } from "../sessionManager/userSessions";
 
 const pageSize = 18;

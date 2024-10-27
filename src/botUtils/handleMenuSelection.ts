@@ -1,7 +1,7 @@
 import { Context } from "telegraf";
 import { getUserLastAction, updateUserLastAction } from "../sessionManager/userSessions";
-import { getChainList } from "../utils/getChainList";
-import { paginateChains } from "../utils/paginateChains";
+import { getChainList } from "./getChainList";
+import { paginateChains } from "./paginateChains";
 
 const pageSize = 18;
 

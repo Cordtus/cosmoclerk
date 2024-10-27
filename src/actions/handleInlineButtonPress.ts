@@ -1,6 +1,6 @@
 import { Context } from "telegraf";
 import { handleChainSelection } from "./handleChainSelection";
-import { handleMenuSelection } from "../utils/handleMenuSelection";
+import { handleMenuSelection } from "../botUtils/handleMenuSelection";
 
 export async function handleInlineButtonPress(ctx: Context): Promise<void> {
   try {
