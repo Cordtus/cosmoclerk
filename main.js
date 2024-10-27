@@ -529,6 +529,68 @@ async function chainBlockExplorers(ctx, chain) {
     }
 }
 
+async function handlePointerLookup(ctx, token) {
+    try {
+        const userId = ctx.from.id;
+        const userAction = userLastAction[userId];
+        const chain = userAction.chain;
+
+        console.log(`[${new Date().toISOString()}] Pointer lookup started for token: ${token}, chain: ${chain}`);
+
+        let pointee = token.trim();
+
+        // Make a single API request to the new endpoint with the token
+        const result = await queryPointer(pointee);
+        console.log(`[${new Date().toISOString()}] Query result: ${JSON.stringify(result)}`);
+
+        // Check if the result exists and respond accordingly
+        if (!result || result.length === 0) {
+            ctx.reply('No pointer found for the provided token.');
+        } else {
+            ctx.reply(formatPointerResponse(result[0])); // Pass the first object in the response array
+        }
+    } catch (error) {
+        console.error(`[${new Date().toISOString()}] Error during pointer lookup:`, error);
+        ctx.reply('Error processing your request. Please try again.');
+    }
+}
+
+async function queryPointer(pointee) {
+    const queryUrl = `https://pointer.basementnodes.ca/`;
+    const payload = JSON.stringify({ address: pointee });
+
+    try {
+        console.log(`[${new Date().toISOString()}] Sending POST request to: ${queryUrl} with payload: ${payload}`);
+
+        const response = await fetch(queryUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload
+        });
+
+        if (!response.ok) {
+            console.error(`[${new Date().toISOString()}] Response returned with status: ${response.status}`);
+            return null;
+        }
+
+        const data = await response.json();
+        console.log(`[${new Date().toISOString()}] Response received from ${queryUrl}: ${JSON.stringify(data)}`);
+
+        return data;
+    } catch (error) {
+        console.error(`[${new Date().toISOString()}] Error querying pointer at ${queryUrl}:`, error);
+        return null;
+    }
+}
+
+function formatPointerResponse(result) {
+    // Adjust the format as per your needs, e.g., including all relevant fields in the response
+    return `Token Address: ${result.address}
+Pointer Type: ${result.pointerType}
+Pointer Address: ${result.pointerAddress || 'N/A'}
+Base Asset: ${result.isBaseAsset ? 'Yes' : 'No'}`;
+}
+
 async function preprocessAndFormatIncentives(ctx, incentivesData, chain) {
     for (const incentive of incentivesData.data) {
         for (const coin of incentive.coins) {
@@ -918,18 +980,22 @@ function sendMainMenu(ctx, userId) {
     ];
 
     // Add IBC-ID and Pool Incentives buttons only for mainnet chains
-if (!userAction.browsingTestnets) {
-    mainMenuButtons.push(Markup.button.callback('5. IBC-ID', 'ibc_id'));
-    if (userAction.chain === 'osmosis') {
-        mainMenuButtons.push(Markup.button.callback('6. LP Incentives', 'pool_incentives'));
-        mainMenuButtons.push(Markup.button.callback('7. Pool Info', 'pool_info'));
-        mainMenuButtons.push(Markup.button.callback('8. Price Info', 'price_info'));
+    if (!userAction.browsingTestnets) {
+        mainMenuButtons.push(Markup.button.callback('5. IBC-ID', 'ibc_id'));
+
+        if (userAction.chain === 'osmosis') {
+            mainMenuButtons.push(Markup.button.callback('6. LP Incentives', 'pool_incentives'));
+            mainMenuButtons.push(Markup.button.callback('7. Pool Info', 'pool_info'));
+            mainMenuButtons.push(Markup.button.callback('8. Price Info', 'price_info'));
+        }
+
+        if (userAction.chain === 'sei') {
+            mainMenuButtons.push(Markup.button.callback('6. Pointer Lookup', 'pointer_lookup'));
+        }
     }
-}
 
     return Markup.inlineKeyboard(mainMenuButtons, { columns: 2 });
 }
-
 
 function paginateChains(chains, currentPage, userId, pageSize) {
     console.log(`Paginating chains. Total chains: ${chains.length}, Current page: ${currentPage}, Page size: ${pageSize}`);
@@ -1084,76 +1150,93 @@ bot.on('text', async (ctx) => {
     const text = ctx.message.text.trim().toLowerCase();
     const userId = ctx.from.id;
 
+    console.log(`[${new Date().toISOString()}] Received text: ${text} from user: ${userId}`);
+
     if (!userLastAction[userId]) {
         userLastAction[userId] = {}; // Initialize if not exist
     }
 
     const userAction = userLastAction[userId];
     if (text === '/start' || text === '/restart') {
+        console.log(`[${new Date().toISOString()}] Restarting session for user: ${userId}`);
         await resetSessionAndShowChains(ctx);
-    //  'awaiting_token_ticker' expected action
     } else if (expectedAction[userId] === 'awaiting_token_ticker') {
-        // Call the function to handle Price Info
+        console.log(`[${new Date().toISOString()}] Handling price info for user: ${userId}`);
         await handlePriceInfo(ctx, text);
-        delete expectedAction[userId]; // Clear the expected action after handling
+        delete expectedAction[userId];
     } else if (expectedAction[userId] === 'awaiting_pool_id') {
-        // Handle pool ID input for Pool Incentives
         const poolId = parseInt(text, 10);
         if (isNaN(poolId)) {
+            console.log(`[${new Date().toISOString()}] Invalid pool ID entered: ${text}`);
             await ctx.reply('Please enter a valid pool_id.');
         } else {
+            console.log(`[${new Date().toISOString()}] Handling pool incentives for pool ID: ${poolId}`);
             await handlePoolIncentives(ctx, poolId);
             delete expectedAction[userId];
         }
-    } else if (expectedAction[userId] === 'awaiting_pool_id_info') { // New condition for Pool Info
-        // Assuming pool IDs are numeric. Adjust if your IDs are different.
+    } else if (expectedAction[userId] === 'awaiting_pool_id_info') {
         const poolId = parseInt(text, 10);
         if (isNaN(poolId)) {
+            console.log(`[${new Date().toISOString()}] Invalid pool ID for info entered: ${text}`);
             await ctx.reply('Please enter a valid pool_id for Pool Info.');
         } else {
-            await handlePoolInfo(ctx, poolId); // Call the function to handle Pool Info
-            delete expectedAction[userId]; // Clear the expected action after handling
+            console.log(`[${new Date().toISOString()}] Handling pool info for pool ID: ${poolId}`);
+            await handlePoolInfo(ctx, poolId);
+            delete expectedAction[userId];
         }
+    } else if (expectedAction[userId] === 'awaiting_pointer_lookup') {
+        console.log(`[${new Date().toISOString()}] Handling pointer lookup for token: ${text}`);
+        await handlePointerLookup(ctx, text);
+        delete expectedAction[userId];
     } else if (!isNaN(text)) {
-        // Numeric input for menu selection
         const optionIndex = parseInt(text) - 1;
-        const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives', 'pool_info', 'price_info'];
-        console.log(`User selected menu option number: ${optionIndex + 1}`);
+        console.log(`[${new Date().toISOString()}] User selected option index: ${optionIndex}`);
+        let mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id'];
+
+        if (userAction.chain === 'osmosis') {
+            mainMenuOptions.push('pool_incentives', 'pool_info', 'price_info');
+        }
+
+        if (userAction.chain === 'sei') {
+            mainMenuOptions.push('pointer_lookup');
+        }
+
         if (optionIndex >= 0 && optionIndex < mainMenuOptions.length) {
             const action = mainMenuOptions[optionIndex];
-            console.log(`Mapped user input to action: ${action}`);
+            console.log(`[${new Date().toISOString()}] Mapped option to action: ${action}`);
             if (userAction && userAction.chain) {
                 await handleMainMenuAction(ctx, action, userAction.chain);
             } else {
+                console.log(`[${new Date().toISOString()}] No chain selected for user: ${userId}`);
                 await ctx.reply('No chain selected. Please select a chain first.');
             }
         } else {
+            console.log(`[${new Date().toISOString()}] Invalid option number: ${optionIndex + 1}`);
             await ctx.reply('Invalid option number. Please try again.');
         }
-        // Within bot.on('text', async (ctx) => { ... })
-        } else if (text.startsWith('ibc/')) {
-            const ibcHash = text.slice(4); // Extract the IBC hash
-            if (userAction && userAction.chain) {
+    } else if (text.startsWith('ibc/')) {
+        const ibcHash = text.slice(4);
+        console.log(`[${new Date().toISOString()}] Handling IBC denom trace for hash: ${ibcHash}`);
+        if (userAction && userAction.chain) {
             const baseDenom = await queryIbcId(ctx, ibcHash, userAction.chain, true);
             if (baseDenom) {
-            ctx.reply(`Base Denomination: ${baseDenom}`);
+                ctx.reply(`Base Denomination: ${baseDenom}`);
             } else {
-            ctx.reply('Failed to fetch IBC denom trace or it does not exist.');
-        }
+                ctx.reply('Failed to fetch IBC denom trace or it does not exist.');
+            }
         } else {
+            console.log(`[${new Date().toISOString()}] No chain selected for IBC denom trace`);
             ctx.reply('No chain selected. Please select a chain first.');
         }
-}
- else {
+    } else {
         const chains = await getChainList();
-        // Adjust chain names to lowercase before comparison
+        console.log(`[${new Date().toISOString()}] Handling chain selection: ${text}`);
         if (chains.map(chain => chain.toLowerCase()).includes(text)) {
-            // Convert the selected chain to its original case as needed or maintain lowercase
             updateUserLastAction(userId, { chain: text });
             const keyboardMarkup = sendMainMenu(ctx, userId);
             await ctx.reply('Select an action:', keyboardMarkup);
         } else {
-            // Fallback for unrecognized commands
+            console.log(`[${new Date().toISOString()}] Unrecognized command: ${text}`);
             await ctx.reply('Unrecognized command. Please try again or use the menu options.');
         }
     }
@@ -1204,6 +1287,17 @@ bot.action(/page:(\d+)/, async (ctx) => {
     } catch (error) {
         console.error(`Error in page action: ${error}`);
         await ctx.reply('An error occurred while processing your request.');
+    }
+});
+
+bot.action('pointer_lookup', async (ctx) => {
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    if (userAction && userAction.chain === 'sei') {
+        await ctx.reply('Enter the token denom or address for pointer lookup:');
+        expectedAction[userId] = 'awaiting_pointer_lookup';
+    } else {
+        await ctx.reply('Pointer lookup is only available for the Sei network.');
     }
 });
 
