@@ -11,7 +11,8 @@ export async function handleMenuSelection(ctx: Context, currentPage: number): Pr
 
   const userAction = getUserLastAction(userId);
   if (!userAction) {
-    return ctx.reply('Session expired. Please restart with /start.');
+    await ctx.reply('Session expired. Please restart with /start.'); // Change here: `await` instead of `return`
+    return;
   }
 
   // Retrieve chains for pagination

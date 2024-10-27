@@ -1,4 +1,4 @@
-import { dns } from "dns";
+import { lookup } from "dns";
 import { https, http } from "follow-redirects";
 
 const unhealthyEndpoints = new Set<string>();
@@ -6,9 +6,10 @@ const unhealthyEndpoints = new Set<string>();
 // Helper function to perform a simple DNS lookup to check if the host is reachable.
 function isHostReachable(hostname: string): Promise<boolean> {
   return new Promise((resolve) => {
-    dns.lookup(hostname, (err) => {
+    lookup(hostname, (err: Error | null) => {
       resolve(!err); // Resolves true if no error
     });
+    
   });
 }
 
@@ -61,8 +62,10 @@ export async function isEndpointHealthy(endpoint: string, isRpc: boolean): Promi
       });
     });
   } catch (error) {
-    console.error(`Error processing endpoint ${endpoint}: ${error.message}`);
+    const errorMessage = (error as Error).message;
+    console.error(`Error processing endpoint ${endpoint}: ${errorMessage}`);
     unhealthyEndpoints.add(endpoint);
     return false;
   }
+  
 }

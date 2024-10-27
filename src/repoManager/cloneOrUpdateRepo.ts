@@ -28,6 +28,10 @@ export async function cloneOrUpdateRepo(): Promise<void> {
       }
     }
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] Error in cloning or updating the repository: ${error.message}`);
+    if (error instanceof Error) {
+      console.error(`[${new Date().toISOString()}] Error: ${error.message}`);
+    } else {
+      console.error(`[${new Date().toISOString()}] Unknown error`, error);
+    }
   }
 }

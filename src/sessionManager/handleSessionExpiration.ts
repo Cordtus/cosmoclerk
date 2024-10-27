@@ -5,7 +5,10 @@ const SESSION_TIMEOUT = 15 * 60 * 1000; // 15 minutes timeout
 
 export function checkAndHandleSessionExpiration(ctx: Context): boolean {
   const userId = ctx.from?.id;
-  if (!userId) return false;
+  if (!userId) {
+    console.error(`[${new Date().toISOString()}] Error: Unable to retrieve user ID from context.`);
+    return false;
+  }
 
   const userAction = getUserLastAction(userId);
   if (userAction) {
@@ -16,5 +19,6 @@ export function checkAndHandleSessionExpiration(ctx: Context): boolean {
       return true;
     }
   }
+
   return false;
 }
