@@ -13,7 +13,9 @@ export function collectMetric(command: string, userId: number): void {
     userId,
   };
   metrics.push(metric);
-  console.log(`[${metric.timestamp.toISOString()}] Collected metric: Command - ${metric.command}, User - ${metric.userId}`);
+  console.log(
+    `[${metric.timestamp.toISOString()}] Collected metric: Command - ${metric.command}, User - ${metric.userId}`,
+  );
 }
 
 // Function to get collected metrics

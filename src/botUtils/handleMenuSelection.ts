@@ -1,13 +1,22 @@
-import { Context } from "telegraf";
-import { getUserLastAction, updateUserLastAction } from "../sessionManager/userSessions";
-import { getChainList } from "./getChainList";
-import { paginateChains } from "./paginateChains";
+import { Context } from 'telegraf';
+
+import {
+  getUserLastAction,
+  updateUserLastAction,
+} from '../sessionManager/userSessions';
+import { getChainList } from './getChainList';
+import { paginateChains } from './paginateChains';
 
 const pageSize = 18;
 
-export async function handleMenuSelection(ctx: Context, currentPage: number): Promise<void> {
+export async function handleMenuSelection(
+  ctx: Context,
+  currentPage: number,
+): Promise<void> {
   const userId = ctx.from?.id;
-  if (!userId) return;
+  if (!userId) {
+    return;
+  }
 
   const userAction = getUserLastAction(userId);
   if (!userAction) {

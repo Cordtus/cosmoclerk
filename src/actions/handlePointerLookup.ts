@@ -1,7 +1,11 @@
-import { Context } from "telegraf";
-import { queryPointer } from "../chainUtils/queryPointer";
+import { Context } from 'telegraf';
 
-export async function handlePointerLookup(ctx: Context, input: string): Promise<void> {
+import { queryPointer } from '../chainUtils/queryPointer';
+
+export async function handlePointerLookup(
+  ctx: Context,
+  input: string,
+): Promise<void> {
   try {
     // Determine the type of input and act accordingly.
     if (isValidEthereumAddress(input)) {
@@ -20,12 +24,19 @@ export async function handlePointerLookup(ctx: Context, input: string): Promise<
         const replyMessage = `Pointer Information:\nChain: ${pointerInfo.chain}\nToken: ${pointerInfo.token}\nStatus: ${pointerInfo.status}`;
         await ctx.reply(replyMessage);
       } else {
-        await ctx.reply(`Pointer information could not be found for "${input}". Please make sure you've entered a valid chain name, token denomination, or address.`);
+        await ctx.reply(
+          `Pointer information could not be found for "${input}". Please make sure you've entered a valid chain name, token denomination, or address.`,
+        );
       }
     }
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] Error handling pointer lookup for ${input}:`, error);
-    await ctx.reply('An error occurred while looking up the pointer information. Please try again or verify your input.');
+    console.error(
+      `[${new Date().toISOString()}] Error handling pointer lookup for ${input}:`,
+      error,
+    );
+    await ctx.reply(
+      'An error occurred while looking up the pointer information. Please try again or verify your input.',
+    );
   }
 }
 

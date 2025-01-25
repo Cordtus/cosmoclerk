@@ -1,4 +1,4 @@
-import db from "../database/db";
+import db from '../database/db';
 
 export function logUserAction(userId: number, action: string): void {
   const stmt = db.prepare(`

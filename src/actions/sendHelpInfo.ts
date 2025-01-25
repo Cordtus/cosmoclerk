@@ -1,12 +1,15 @@
-import { Context } from "telegraf";
-import { logUserAction } from "../botUtils/logUserAction";
+import { Context } from 'telegraf';
+
+import { logUserAction } from '../botUtils/logUserAction';
 
 export async function sendHelpInfo(ctx: Context): Promise<void> {
   const userId = ctx.from?.id;
-  if (!userId) return;
+  if (!userId) {
+    return;
+  }
 
   try {
-    logUserAction(userId, `Requested help information`);
+    logUserAction(userId, 'Requested help information');
 
     const helpMessage = `
     Here are the commands you can use:
@@ -21,10 +24,15 @@ export async function sendHelpInfo(ctx: Context): Promise<void> {
 
     Use inline buttons where available to navigate options.
     `;
-    
+
     await ctx.reply(helpMessage);
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] Error sending help information:`, error);
-    await ctx.reply('An error occurred while fetching help information. Please try again.');
+    console.error(
+      `[${new Date().toISOString()}] Error sending help information:`,
+      error,
+    );
+    await ctx.reply(
+      'An error occurred while fetching help information. Please try again.',
+    );
   }
 }

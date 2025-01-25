@@ -1,15 +1,20 @@
-import { Context } from "telegraf";
-import { getChainList } from "../chainUtils/getChainList";
-import { paginateChains } from "../botUtils/paginateChains";
-import { resetUserSession } from "../sessionManager/userSessions";
+import { Context } from 'telegraf';
+
+import { getChainList } from '../chainUtils/getChainList';
+import { paginateChains } from '../botUtils/paginateChains';
+import { resetUserSession } from '../sessionManager/userSessions';
 
 const pageSize = 18;
 
 export async function startInteraction(ctx: Context): Promise<void> {
   const userId = ctx.from?.id;
-  if (!userId) return;
+  if (!userId) {
+    return;
+  }
 
-  console.log(`[${new Date().toISOString()}] User ${userId} started interaction.`);
+  console.log(
+    `[${new Date().toISOString()}] User ${userId} started interaction.`,
+  );
 
   // Reset the user's session on /start command
   resetUserSession(userId);

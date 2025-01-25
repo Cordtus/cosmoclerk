@@ -1,10 +1,16 @@
-import { Context } from "telegraf";
-import { getTestnetChainInfo } from "../chainUtils/getTestnetChainInfo";
-import { logUserAction } from "../botUtils/logUserAction";
+import { Context } from 'telegraf';
 
-export async function sendTestnetDetails(ctx: Context, chain: string): Promise<void> {
+import { getTestnetChainInfo } from '../chainUtils/getTestnetChainInfo';
+import { logUserAction } from '../botUtils/logUserAction';
+
+export async function sendTestnetDetails(
+  ctx: Context,
+  chain: string,
+): Promise<void> {
   const userId = ctx.from?.id;
-  if (!userId) return;
+  if (!userId) {
+    return;
+  }
 
   try {
     logUserAction(userId, `Requested testnet details for chain: ${chain}`);
@@ -17,7 +23,12 @@ export async function sendTestnetDetails(ctx: Context, chain: string): Promise<v
       await ctx.reply(`Testnet details could not be found for ${chain}.`);
     }
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] Error sending testnet details for ${chain}:`, error);
-    await ctx.reply('An error occurred while fetching testnet details. Please try again.');
+    console.error(
+      `[${new Date().toISOString()}] Error sending testnet details for ${chain}:`,
+      error,
+    );
+    await ctx.reply(
+      'An error occurred while fetching testnet details. Please try again.',
+    );
   }
 }

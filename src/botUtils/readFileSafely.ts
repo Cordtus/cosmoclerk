@@ -1,9 +1,9 @@
-import * as fs from "fs";
+import * as fs from 'fs';
 
 export function readFileSafely(filePath: string): any {
   try {
     if (fs.existsSync(filePath)) {
-      return JSON.parse(fs.readFileSync(filePath, "utf8"));
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } else {
       console.error(`File not found: ${filePath}`);
       return null; // File does not exist

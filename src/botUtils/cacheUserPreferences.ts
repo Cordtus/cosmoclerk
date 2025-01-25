@@ -6,7 +6,10 @@ interface UserCache {
 
 const userPreferencesCache: Record<number, UserCache> = {};
 
-export function cacheUserPreferences(userId: number, preferredChains: string[]): void {
+export function cacheUserPreferences(
+  userId: number,
+  preferredChains: string[],
+): void {
   userPreferencesCache[userId] = {
     userId,
     preferredChains,
@@ -14,9 +17,11 @@ export function cacheUserPreferences(userId: number, preferredChains: string[]):
   };
 }
 
-export function getCachedUserPreferences(userId: number): UserCache | undefined {
+export function getCachedUserPreferences(
+  userId: number,
+): UserCache | undefined {
   const cached = userPreferencesCache[userId];
-  if (cached && (new Date().getTime() - cached.timestamp.getTime()) < 300000) {
+  if (cached && new Date().getTime() - cached.timestamp.getTime() < 300000) {
     // Cache is valid for 5 minutes
     return cached;
   }

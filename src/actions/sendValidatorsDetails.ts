@@ -1,10 +1,16 @@
-import { Context } from "telegraf";
-import { getValidatorsList } from "../chainUtils/getValidatorsList";
-import { logUserAction } from "../botUtils/logUserAction";
+import { Context } from 'telegraf';
 
-export async function sendValidatorsDetails(ctx: Context, chain: string): Promise<void> {
+import { getValidatorsList } from '../chainUtils/getValidatorsList';
+import { logUserAction } from '../botUtils/logUserAction';
+
+export async function sendValidatorsDetails(
+  ctx: Context,
+  chain: string,
+): Promise<void> {
   const userId = ctx.from?.id;
-  if (!userId) return;
+  if (!userId) {
+    return;
+  }
 
   try {
     logUserAction(userId, `Requested validators for chain: ${chain}`);
@@ -12,14 +18,22 @@ export async function sendValidatorsDetails(ctx: Context, chain: string): Promis
 
     if (validators.length > 0) {
       const validatorDetails = validators
-        .map((validator: any) => `Validator: ${validator.name}\nPower: ${validator.votingPower}\nAddress: ${validator.address}\n`)
-        .join("\n");
+        .map(
+          (validator: any) =>
+            `Validator: ${validator.name}\nPower: ${validator.votingPower}\nAddress: ${validator.address}\n`,
+        )
+        .join('\n');
       await ctx.reply(`Validators for ${chain}:\n\n${validatorDetails}`);
     } else {
       await ctx.reply(`No validators found for ${chain}.`);
     }
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] Error sending validators for ${chain}:`, error);
-    await ctx.reply('An error occurred while fetching validator details. Please try again.');
+    console.error(
+      `[${new Date().toISOString()}] Error sending validators for ${chain}:`,
+      error,
+    );
+    await ctx.reply(
+      'An error occurred while fetching validator details. Please try again.',
+    );
   }
 }

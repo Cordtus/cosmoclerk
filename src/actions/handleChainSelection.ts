@@ -1,10 +1,16 @@
-import { Context } from "telegraf";
-import { updateUserLastAction } from "../sessionManager/userSessions";
-import { getChainInfo } from "../chainUtils/getChainInfo";
+import { Context } from 'telegraf';
 
-export async function handleChainSelection(ctx: Context, chain: string): Promise<void> {
+import { updateUserLastAction } from '../sessionManager/userSessions';
+import { getChainInfo } from '../chainUtils/getChainInfo';
+
+export async function handleChainSelection(
+  ctx: Context,
+  chain: string,
+): Promise<void> {
   const userId = ctx.from?.id;
-  if (!userId) return;
+  if (!userId) {
+    return;
+  }
 
   try {
     const chainInfo = await getChainInfo(chain);
@@ -16,7 +22,10 @@ export async function handleChainSelection(ctx: Context, chain: string): Promise
     }
     updateUserLastAction(userId, { chain });
   } catch (error) {
-    console.error(`[${new Date().toISOString()}] Error handling chain selection for ${chain}:`, error);
+    console.error(
+      `[${new Date().toISOString()}] Error handling chain selection for ${chain}:`,
+      error,
+    );
     await ctx.reply('An error occurred while fetching the chain details.');
   }
 }

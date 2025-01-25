@@ -1,5 +1,6 @@
-import Database from 'better-sqlite3';
 import * as path from 'path';
+
+import Database from 'better-sqlite3';
 
 const dbPath = path.join(__dirname, '../../data', 'bot_data.db');
 const db = new Database(dbPath);
@@ -20,6 +21,5 @@ db.exec(`
     timestamp INTEGER
   );
 `);
-
 
 export default db;

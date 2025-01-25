@@ -1,4 +1,4 @@
-import { getCollectedMetrics } from "./collectMetrics";
+import { getCollectedMetrics } from './collectMetrics';
 
 export function setupMetricsLoggingJob(intervalMinutes: number): void {
   setInterval(() => {

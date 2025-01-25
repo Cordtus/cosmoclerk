@@ -1,7 +1,8 @@
-import db from "../database/db";
+import db from '../database/db';
 
 // Define the structure of a user's action
-export interface UserAction {  // Change here to export UserAction
+export interface UserAction {
+  // Change here to export UserAction
   chain?: string;
   messageId?: number;
   chatId?: number;
@@ -22,7 +23,10 @@ interface UserSessionRow {
 }
 
 // Update or remove the last action for a specific user
-export function updateUserLastAction(userId: number, data: UserAction | null): void {
+export function updateUserLastAction(
+  userId: number,
+  data: UserAction | null,
+): void {
   if (data) {
     const timestamp = data.timestamp?.getTime() || new Date().getTime();
     const customData = JSON.stringify(data.customData || {});
@@ -39,16 +43,26 @@ export function updateUserLastAction(userId: number, data: UserAction | null): v
         last_action_timestamp = excluded.last_action_timestamp
     `);
 
-    stmt.run(userId, data.chain, data.messageId, data.chatId, data.browsingTestnets, customData, timestamp);
+    stmt.run(
+      userId,
+      data.chain,
+      data.messageId,
+      data.chatId,
+      data.browsingTestnets,
+      customData,
+      timestamp,
+    );
   } else {
-    const deleteStmt = db.prepare("DELETE FROM user_sessions WHERE user_id = ?");
+    const deleteStmt = db.prepare(
+      'DELETE FROM user_sessions WHERE user_id = ?',
+    );
     deleteStmt.run(userId);
   }
 }
 
 // Retrieve the last action for a specific user
 export function getUserLastAction(userId: number): UserAction | undefined {
-  const stmt = db.prepare("SELECT * FROM user_sessions WHERE user_id = ?");
+  const stmt = db.prepare('SELECT * FROM user_sessions WHERE user_id = ?');
   const row = stmt.get(userId) as UserSessionRow | undefined;
 
   if (row) {
@@ -65,8 +79,11 @@ export function getUserLastAction(userId: number): UserAction | undefined {
 }
 
 // Get all users with active sessions
-export function getAllUserLastActions(): Record<number, UserAction | undefined> {
-  const stmt = db.prepare("SELECT * FROM user_sessions");
+export function getAllUserLastActions(): Record<
+  number,
+  UserAction | undefined
+> {
+  const stmt = db.prepare('SELECT * FROM user_sessions');
   const rows = stmt.all() as UserSessionRow[];
 
   const userActions: Record<number, UserAction> = {};
@@ -86,7 +103,9 @@ export function getAllUserLastActions(): Record<number, UserAction | undefined> 
 
 // Reset the session for a specific user
 export function resetUserSession(userId: number): void {
-  const deleteStmt = db.prepare("DELETE FROM user_sessions WHERE user_id = ?");
+  const deleteStmt = db.prepare('DELETE FROM user_sessions WHERE user_id = ?');
   deleteStmt.run(userId);
-  console.log(`[${new Date().toISOString()}] Resetting session for user ${userId}`);
+  console.log(
+    `[${new Date().toISOString()}] Resetting session for user ${userId}`,
+  );
 }

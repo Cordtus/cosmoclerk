@@ -1,4 +1,4 @@
-import fetch from "node-fetch";
+import fetch from 'node-fetch';
 
 // Define the expected structure of the response from the /status endpoint
 interface NetworkStatusResponse {
@@ -36,7 +36,9 @@ export async function getNetworkStatus(rpcUrl: string): Promise<{
   } catch (error) {
     // Type assertion for error to let TypeScript know it's of type Error
     const errorMessage = (error as Error).message;
-    console.error(`[${new Date().toISOString()}] Error fetching network status from ${rpcUrl}: ${errorMessage}`);
+    console.error(
+      `[${new Date().toISOString()}] Error fetching network status from ${rpcUrl}: ${errorMessage}`,
+    );
     return null;
   }
 }

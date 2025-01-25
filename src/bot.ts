@@ -1,9 +1,9 @@
-import { Telegraf } from "telegraf";
-import { cloneOrUpdateRepo } from "./repoManager/cloneOrUpdateRepo";
-import { setupCommands } from "./commands/setupCommands";
-import { setupActions } from "./actions/setupActions";
+import { Telegraf } from 'telegraf';
+import { config } from 'dotenv';
 
-import { config } from "dotenv";
+import { cloneOrUpdateRepo } from './repoManager/cloneOrUpdateRepo';
+import { setupCommands } from './commands/setupCommands';
+import { setupActions } from './actions/setupActions';
 
 // Load environment variables from .env
 config();
@@ -12,7 +12,7 @@ config();
 const BOT_TOKEN = process.env.BOT_TOKEN;
 
 if (!BOT_TOKEN) {
-  throw new Error("BOT_TOKEN must be provided in environment variables");
+  throw new Error('BOT_TOKEN must be provided in environment variables');
 }
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -25,9 +25,10 @@ setupCommands(bot);
 setupActions(bot);
 
 // Launch the bot
-bot.launch()
+bot
+  .launch()
   .then(() => console.log('Bot launched successfully'))
-  .catch(error => console.error('Failed to launch the bot:', error));
+  .catch((error) => console.error('Failed to launch the bot:', error));
 
 // Graceful stop
 process.once('SIGINT', () => {
@@ -41,4 +42,3 @@ process.once('SIGTERM', () => {
   bot.stop('SIGTERM received');
   process.exit(0);
 });
-

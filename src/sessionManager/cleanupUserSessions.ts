@@ -1,4 +1,4 @@
-import { getAllUserLastActions, updateUserLastAction } from "./userSessions";
+import { getAllUserLastActions, updateUserLastAction } from './userSessions';
 
 export function cleanupUserSessions(): void {
   const now = new Date();
@@ -15,9 +15,12 @@ export function cleanupUserSessions(): void {
       const timeDifference = now.getTime() - userAction.timestamp.getTime();
 
       // If the action is older than 10 minutes, delete it
-      if (timeDifference > 600000) { // 10 minutes in milliseconds
+      if (timeDifference > 600000) {
+        // 10 minutes in milliseconds
         updateUserLastAction(userId, null);
-        console.log(`[${now.toISOString()}] Cleaned up session for user ${userId}`);
+        console.log(
+          `[${now.toISOString()}] Cleaned up session for user ${userId}`,
+        );
       }
     }
   });
