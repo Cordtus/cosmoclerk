@@ -105,7 +105,7 @@ async function startInteraction(ctx) {
     // Reset the user's session on /start command
     resetUserSession(userId);
 
-    // Retrieve the chain list and generate paginated chain list
+    // Retrieve the chain list
     const chains = await getChainList();
     const keyboard = paginateChains(chains, 0, userId, pageSize);
     ctx.reply('Type a chain name, or select from menu:', keyboard);
@@ -181,7 +181,7 @@ async function getTestnetsList() {
 
     const directories = fs.readdirSync(testnetsDir, { withFileTypes: true })
         .filter(dirent => dirent.isDirectory() && /^[A-Za-z0-9]/.test(dirent.name))
-        .map(dirent => `testnets/${dirent.name}`);
+        .map(dirent => dirent.name); // Return just the chain name, not the path
 
     return directories.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 }
@@ -195,7 +195,13 @@ function isHostReachable(hostname) {
         return Promise.resolve(false);
     }
     return new Promise((resolve) => {
+        const timeout = setTimeout(() => {
+            console.error(`DNS lookup timeout for host: ${hostname}`);
+            resolve(false);
+        }, 3000); // 3 second timeout for DNS lookup
+
         dns.lookup(hostname, (err) => {
+            clearTimeout(timeout);
             if (err) {
                 console.error(`DNS lookup failed for host: ${hostname}, Error: ${err.message}`);
                 resolve(false);
@@ -299,9 +305,22 @@ setInterval(() => {
 }, 60000); // Clear every minute
 
 async function findHealthyEndpointOfType(chainData, type) {
-    for (const endpoint of chainData.apis[type] || []) {
-        if (await isEndpointHealthy(endpoint.address, type === 'rpc')) {
-            return endpoint.address;
+    const endpoints = chainData.apis[type] || [];
+    const maxTime = 15000; // 15 seconds total timeout
+    const startTime = Date.now();
+    
+    for (const endpoint of endpoints) {
+        if (Date.now() - startTime > maxTime) {
+            console.log(`Timeout reached while checking ${type} endpoints`);
+            break;
+        }
+        
+        try {
+            if (await isEndpointHealthy(endpoint.address, type === 'rpc')) {
+                return endpoint.address;
+            }
+        } catch (error) {
+            console.error(`Error checking endpoint ${endpoint.address}:`, error);
         }
     }
     return "Unknown";
@@ -927,6 +946,9 @@ if (!userAction.browsingTestnets) {
     }
 }
 
+    // Add back button to return to chain selection
+    mainMenuButtons.push(Markup.button.callback('← Back to Chains', 'back_to_chains'));
+
     return Markup.inlineKeyboard(mainMenuButtons, { columns: 2 });
 }
 
@@ -939,6 +961,7 @@ function paginateChains(chains, currentPage, userId, pageSize) {
     const end = start + pageSize;
     const chainsToShow = chains.slice(start, end);
     const lastSelectedChain = userLastAction[userId]?.chain;
+    const browsingTestnets = userLastAction[userId]?.browsingTestnets || false;
 
     // Log the chains that should be shown on the current page
     console.log(`Chains to show on page ${currentPage}:`, chainsToShow);
@@ -967,6 +990,12 @@ function paginateChains(chains, currentPage, userId, pageSize) {
         rowsOfButtons.push(navigationButtons);
     }
 
+    // Add mainnet/testnet toggle button
+    const toggleButton = browsingTestnets ? 
+        Markup.button.callback('↩️ Switch to Mainnet', 'switch_to_mainnet') :
+        Markup.button.callback('🧪 Switch to Testnet', 'switch_to_testnet');
+    rowsOfButtons.push([toggleButton]);
+
     // Generate the keyboard markup to return
     const keyboardMarkup = Markup.inlineKeyboard(rowsOfButtons);
 
@@ -990,42 +1019,25 @@ async function showTestnets(ctx, userId) {
 bot.action(/^select_chain:(.+)$/, async (ctx) => {
     const chain = ctx.match[1];
     const userId = ctx.from.id;
+    const userAction = userLastAction[userId] || {};
 
-    if (chain === 'testnets') {
-        // Assuming you have a separate directory for testnets
-        const testnetsDir = path.join(REPO_DIR, 'testnets');
-        const testnetsList = await getChainList(testnetsDir);
+    // Store the selected chain and whether it's a testnet
+    updateUserLastAction(userId, {
+        chain: chain,
+        messageId: ctx.callbackQuery.message.message_id,
+        chatId: ctx.callbackQuery.message.chat.id,
+        browsingTestnets: userAction.browsingTestnets || false
+    });
 
-        // Store the fact that the user is looking at testnets and the list of testnets
-        updateUserLastAction(userId, {
-            browsingTestnets: true,
-            testnetsList: testnetsList,
-            messageId: ctx.callbackQuery.message.message_id,
-            chatId: ctx.callbackQuery.message.chat.id
-        });
-
-        // Show the list of testnets using the pagination function
-        const keyboardMarkup = paginateChains(testnetsList, 0, userId, 18); // Adjust page size as needed
-        await ctx.reply('Select a testnet:', keyboardMarkup);
-    } else {
-        // If the user is not browsing testnets, store the selected chain
-        updateUserLastAction(userId, {
-            chain: chain,
-            messageId: ctx.callbackQuery.message.message_id,
-            chatId: ctx.callbackQuery.message.chat.id,
-            browsingTestnets: false
-        });
-
-        // Show the main menu for the selected chain
-        const keyboardMarkup = sendMainMenu(ctx, userId);
-        await ctx.editMessageText('Select an action:', {
-            parse_mode: 'Markdown',
-            disable_web_page_preview: true,
-            reply_markup: keyboardMarkup.reply_markup,
-            chat_id: ctx.callbackQuery.message.chat.id,
-            message_id: ctx.callbackQuery.message.message_id
-        });
-    }
+    // Show the main menu for the selected chain
+    const keyboardMarkup = sendMainMenu(ctx, userId);
+    await ctx.editMessageText('Select an action:', {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: keyboardMarkup.reply_markup,
+        chat_id: ctx.callbackQuery.message.chat.id,
+        message_id: ctx.callbackQuery.message.message_id
+    });
 });
 
 async function resetSessionAndShowChains(ctx) {
@@ -1048,24 +1060,43 @@ bot.command('restart', async (ctx) => {
     await resetSessionAndShowChains(ctx);
 });
 
+bot.command(['mainnet', 'mainnets'], async (ctx) => {
+    const userId = ctx.from.id;
+    const chains = await getChainList();
+    updateUserLastAction(userId, { browsingTestnets: false });
+    const keyboard = paginateChains(chains, 0, userId, pageSize);
+    await ctx.reply('Mainnet chains:', keyboard);
+});
+
+bot.command(['testnet', 'testnets'], async (ctx) => {
+    const userId = ctx.from.id;
+    const testnetsList = await getTestnetsList();
+    updateUserLastAction(userId, { browsingTestnets: true });
+    const keyboard = paginateChains(testnetsList, 0, userId, pageSize);
+    await ctx.reply('Testnet chains:', keyboard);
+});
+
 bot.action('ibc_id', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        await ctx.reply(`Enter IBC denom for ${userAction.chain}:`);
+        await editOrSendMessage(ctx, userId, `Enter IBC denom for ${userAction.chain}:`);
+        expectedAction[userId] = 'awaiting_ibc_denom';
     } else {
-        await ctx.reply('No chain selected. Please select a chain first.');
+        await editOrSendMessage(ctx, userId, 'No chain selected. Please select a chain first.');
     }
 });
 
 bot.action('pool_incentives', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
-    if (userAction && userAction.chain) {
-        await ctx.reply(`Enter pool_id for ${userAction.chain}:`);
+    if (userAction && userAction.chain === 'osmosis') {
+        await editOrSendMessage(ctx, userId, 'Enter pool_id for Osmosis:');
         expectedAction[userId] = 'awaiting_pool_id';
+    } else if (userAction && userAction.chain) {
+        await editOrSendMessage(ctx, userId, 'Pool incentives are only available for Osmosis.');
     } else {
-        await ctx.reply('No chain selected. Please select a chain first.');
+        await editOrSendMessage(ctx, userId, 'No chain selected. Please select a chain first.');
     }
 });
 
@@ -1073,10 +1104,10 @@ bot.action('price_info', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain === 'osmosis') {
-        await ctx.reply('Enter token ticker for Price Info:');
+        await editOrSendMessage(ctx, userId, 'Enter token ticker for Price Info:');
         expectedAction[userId] = 'awaiting_token_ticker'; // Prepare to handle the token ticker input
     } else {
-        await ctx.reply('Price info is only available for Osmosis.');
+        await editOrSendMessage(ctx, userId, 'Price info is only available for Osmosis.');
     }
 });
 
@@ -1091,6 +1122,22 @@ bot.on('text', async (ctx) => {
     const userAction = userLastAction[userId];
     if (text === '/start' || text === '/restart') {
         await resetSessionAndShowChains(ctx);
+    //  'awaiting_ibc_denom' expected action
+    } else if (expectedAction[userId] === 'awaiting_ibc_denom') {
+        if (text.startsWith('ibc/')) {
+            const ibcHash = text.slice(4);
+            if (userAction && userAction.chain) {
+                const baseDenom = await queryIbcId(ctx, ibcHash, userAction.chain, true);
+                if (baseDenom) {
+                    await editOrSendMessage(ctx, userId, `Base Denomination: ${baseDenom}`);
+                } else {
+                    await editOrSendMessage(ctx, userId, 'Failed to fetch IBC denom trace or it does not exist.');
+                }
+            }
+        } else {
+            await editOrSendMessage(ctx, userId, 'Please enter a valid IBC denom (format: ibc/HASH)');
+        }
+        delete expectedAction[userId];
     //  'awaiting_token_ticker' expected action
     } else if (expectedAction[userId] === 'awaiting_token_ticker') {
         // Call the function to handle Price Info
@@ -1130,26 +1177,33 @@ bot.on('text', async (ctx) => {
         } else {
             await ctx.reply('Invalid option number. Please try again.');
         }
-        // Within bot.on('text', async (ctx) => { ... })
-        } else if (text.startsWith('ibc/')) {
-            const ibcHash = text.slice(4); // Extract the IBC hash
-            if (userAction && userAction.chain) {
+    } else if (text.startsWith('ibc/')) {
+        // Handle direct IBC denom input
+        const ibcHash = text.slice(4);
+        if (userAction && userAction.chain) {
             const baseDenom = await queryIbcId(ctx, ibcHash, userAction.chain, true);
             if (baseDenom) {
-            ctx.reply(`Base Denomination: ${baseDenom}`);
+                await ctx.reply(`Base Denomination: ${baseDenom}`);
             } else {
-            ctx.reply('Failed to fetch IBC denom trace or it does not exist.');
-        }
+                await ctx.reply('Failed to fetch IBC denom trace or it does not exist.');
+            }
         } else {
-            ctx.reply('No chain selected. Please select a chain first.');
+            await ctx.reply('No chain selected. Please select a chain first.');
         }
-}
- else {
-        const chains = await getChainList();
-        // Adjust chain names to lowercase before comparison
-        if (chains.map(chain => chain.toLowerCase()).includes(text)) {
+    } else {
+        // Check if it's a chain name from mainnet or testnet
+        const mainnetChains = await getChainList();
+        const testnetChains = await getTestnetsList();
+        
+        // Check mainnet chains first
+        if (mainnetChains.map(chain => chain.toLowerCase()).includes(text)) {
             // Convert the selected chain to its original case as needed or maintain lowercase
-            updateUserLastAction(userId, { chain: text });
+            updateUserLastAction(userId, { chain: text, browsingTestnets: false });
+            const keyboardMarkup = sendMainMenu(ctx, userId);
+            await ctx.reply('Select an action:', keyboardMarkup);
+        } else if (testnetChains.map(chain => chain.toLowerCase()).includes(text)) {
+            // It's a testnet chain
+            updateUserLastAction(userId, { chain: text, browsingTestnets: true });
             const keyboardMarkup = sendMainMenu(ctx, userId);
             await ctx.reply('Select an action:', keyboardMarkup);
         } else {
@@ -1165,11 +1219,18 @@ bot.action(/page:(\d+)/, async (ctx) => {
         const page = parseInt(ctx.match[1]);
         console.log(`Page requested: ${page}`);
 
-        const chains = await getChainList();
-        console.log(`Total chains retrieved: ${chains.length}`);
-
-        // Get userId to pass to paginateChains
         const userId = ctx.from.id;
+        const userAction = userLastAction[userId] || {};
+        
+        // Get the appropriate chain list based on whether user is browsing testnets
+        let chains;
+        if (userAction.browsingTestnets) {
+            chains = await getTestnetsList();
+        } else {
+            chains = await getChainList();
+        }
+        
+        console.log(`Total chains retrieved: ${chains.length}`);
 
         if (!chains.length) {
             console.log('No chains available');
@@ -1335,11 +1396,66 @@ bot.action('pool_info', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain === 'osmosis') {
-        await ctx.reply('Enter pool_id for Osmosis:');
+        await editOrSendMessage(ctx, userId, 'Enter pool_id for Osmosis:');
         expectedAction[userId] = 'awaiting_pool_id_info'; // Set the expected action to await pool ID input
     } else {
-        await ctx.reply('The "Pool Info" feature is only available for the Osmosis chain.');
+        await editOrSendMessage(ctx, userId, 'The "Pool Info" feature is only available for the Osmosis chain.');
     }
+});
+
+bot.action('switch_to_mainnet', async (ctx) => {
+    const userId = ctx.from.id;
+    const chains = await getChainList();
+    updateUserLastAction(userId, { browsingTestnets: false });
+    const keyboard = paginateChains(chains, 0, userId, pageSize);
+    
+    await ctx.editMessageText('Mainnet chains:', {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: keyboard.reply_markup,
+        chat_id: ctx.callbackQuery.message.chat.id,
+        message_id: ctx.callbackQuery.message.message_id
+    });
+});
+
+bot.action('switch_to_testnet', async (ctx) => {
+    const userId = ctx.from.id;
+    const testnetsList = await getTestnetsList();
+    updateUserLastAction(userId, { browsingTestnets: true });
+    const keyboard = paginateChains(testnetsList, 0, userId, pageSize);
+    
+    await ctx.editMessageText('Testnet chains:', {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: keyboard.reply_markup,
+        chat_id: ctx.callbackQuery.message.chat.id,
+        message_id: ctx.callbackQuery.message.message_id
+    });
+});
+
+bot.action('back_to_chains', async (ctx) => {
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId] || {};
+    
+    let chains;
+    let message;
+    if (userAction.browsingTestnets) {
+        chains = await getTestnetsList();
+        message = 'Testnet chains:';
+    } else {
+        chains = await getChainList();
+        message = 'Select a chain:';
+    }
+    
+    const keyboard = paginateChains(chains, 0, userId, pageSize);
+    
+    await ctx.editMessageText(message, {
+        parse_mode: 'Markdown',
+        disable_web_page_preview: true,
+        reply_markup: keyboard.reply_markup,
+        chat_id: ctx.callbackQuery.message.chat.id,
+        message_id: ctx.callbackQuery.message.message_id
+    });
 });
 
 // Clear stored message details if needed
