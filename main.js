@@ -599,175 +599,6 @@ async function queryIbcId(ctx, ibcId, chain, returnBaseDenom = false) {
     }
 }
 
-async function handlePoolIncentives(ctx, poolId) {
-
-    const userAction = userLastAction[ctx.from.id];
-    if (!userAction || !userAction.chain) {
-        await ctx.reply('No chain selected. Please select a chain first.');
-        return;
-    }
-
-    try {
-        const chainInfoResult = await chainInfo(ctx, userAction.chain);
-        if (!chainInfoResult || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
-            ctx.reply('Error: Healthy REST address not found for the selected chain.');
-            return;
-        }
-
-        let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, '');
-        const poolTypeUrl = `${restAddress}/osmosis/gamm/v1beta1/pools/${poolId}`;
-        const poolTypeResponse = await fetch(poolTypeUrl);
-
-        if (!poolTypeResponse.ok) {
-            ctx.reply('Error fetching pool type information. Please try again.');
-            return;
-        }
-
-        const poolTypeData = await poolTypeResponse.json();
-        const poolType = poolTypeData.pool["@type"];
-
-
-    if (poolType.includes("/osmosis.gamm.v1beta1.Pool") || poolType.includes("/osmosis.gamm.poolmodels.stableswap.v1beta1.Pool")) {
-        try {
-            const response = await fetch(`http://jasbanza.dedicated.co.za:7000/pool/${poolId}`);
-            const rawData = await response.text();
-            const jsonMatch = rawData.match(/<pre>([\s\S]*?)<\/pre>/);
-
-            if (!jsonMatch || jsonMatch.length < 2) {
-                throw new Error("No valid JSON found in the server's response.");
-            }
-
-            const jsonString = jsonMatch[1];
-            let data = JSON.parse(jsonString);
-
-            // Assume data.data contains the incentives with coins needing potential translation
-            for (const incentive of data.data) {
-                for (const coin of incentive.coins) {
-                    if (coin.denom.startsWith('ibc/')) {
-                        const ibcId = coin.denom.split('/')[1];
-                        // Use the modified queryIbcId to get the base denomination
-                        const baseDenom = await queryIbcId(ctx, ibcId, userAction.chain, true);
-                        coin.denom = baseDenom || coin.denom; // Replace with the base denom if fetched
-                    }
-                }
-            }
-
-            // Now that all IBC denominations have been translated, format and reply with the updated incentives data
-            const formattedResponse = formatPoolIncentivesResponse(data);
-            ctx.reply(formattedResponse);
-
-        } catch (error) {
-            console.error('Error processing pool incentives data:', error);
-            ctx.reply('Error processing pool incentives data. Please try again.');
-        }
-        } else if (poolType.includes("/osmosis.concentratedliquidity.v1beta1.Pool")) {
-            const url = `${restAddress}/osmosis/concentratedliquidity/v1beta1/incentive_records?pool_id=${poolId}`;
-            const response = await fetch(url);
-            if (!response.ok) {
-                throw new Error('Failed to fetch incentive records');
-            }
-            const data = await response.json();
-
-            if (data.incentive_records && data.incentive_records.length > 0) {
-                const incentivesPromises = data.incentive_records.map(async (record) => {
-                    const { incentive_id, incentive_record_body: { remaining_coin, emission_rate, start_time } } = record;
-                    let denom = remaining_coin.denom;
-                    if (denom.startsWith('ibc/')) {
-                        const ibcId = denom.split('/')[1];
-                        const ibcDenomUrl = `${restAddress}/ibc/apps/transfer/v1/denom_traces/${ibcId}`;
-                        try {
-                            const ibcResponse = await fetch(ibcDenomUrl);
-                            const ibcData = await ibcResponse.json();
-                            denom = ibcData.denom_trace ? ibcData.denom_trace.base_denom : denom;
-                        } catch (error) {
-                            console.error('Error fetching IBC denom trace:', error);
-                        }
-                    }
-
-            // Calculate time remaining until the next epoch
-            const epochStartTime = new Date(start_time);
-            const nextEpoch = new Date(epochStartTime);
-            nextEpoch.setUTCDate(epochStartTime.getUTCDate() + 1); // Next day
-            nextEpoch.setUTCHours(17, 16, 12); // Time of the epoch
-
-            const now = new Date();
-            let time_remaining = (nextEpoch - now) / 1000; // Convert to seconds
-            if (time_remaining < 0) {
-            // If the current time is past today's epoch, calculate for the next day's epoch
-            nextEpoch.setUTCDate(nextEpoch.getUTCDate() + 1);
-            time_remaining = (nextEpoch - now) / 1000;
-        }
-
-            // Convert time_remaining to a more readable format if necessary
-            const hours = Math.floor(time_remaining / 3600);
-            const minutes = Math.floor((time_remaining % 3600) / 60);
-            const seconds = Math.floor(time_remaining % 60);
-            const timeRemainingFormatted = `${hours}h ${minutes}m ${seconds}s`;
-
-            // Truncate the "amount_remaining" to remove numbers after the decimal
-            const amountRemainingTruncated = Math.floor(Number(remaining_coin.amount));
-            // Assuming emission_rate is a simple string that represents a number
-            const emissionRateTruncated = Math.floor(Number(emission_rate));
-
-                    return {
-                        incentive_id,
-                        denom, // Now possibly translated
-                        amount_remaining: Math.floor(Number(remaining_coin.amount)).toString(),
-                        emission_rate: Math.floor(Number(emission_rate)).toString(),
-                        time_remaining: timeRemainingFormatted,
-                    };
-                });
-
-                const incentives = await Promise.all(incentivesPromises);
-                ctx.reply(JSON.stringify(incentives, null, 2));
-            } else {
-                ctx.reply('No incentives found.');
-            }
-        } else {
-            ctx.reply('Unsupported pool type or no incentives available for this pool type.');
-        }
-    } catch (error) {
-        console.error('Error processing pool incentives:', error);
-        ctx.reply('Error processing request. Please try again.');
-    }
-}
-
-function formatPoolIncentivesResponse(data) {
-    if (!data.data || data.data.length === 0) {
-        return 'No incentives data available.';
-    }
-
-    let response = '';
-    const currentDate = new Date(); // Get the current date
-
-    const filteredAndSortedData = data.data
-        .filter(incentive => {
-            const startTime = new Date(incentive.start_time);
-            const durationDays = parseInt(incentive.num_epochs_paid_over, 10);
-            const endTime = new Date(startTime.getTime() + durationDays * 24 * 60 * 60 * 1000); // Calculate end time
-
-            return startTime.getFullYear() !== 1970 && durationDays !== 1 && endTime > currentDate;
-        })
-        .sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
-
-    if (filteredAndSortedData.length === 0) {
-        return 'No current incentives available.';
-    }
-
-    filteredAndSortedData.forEach((incentive) => {
-        const startTime = new Date(incentive.start_time);
-        const durationDays = parseInt(incentive.num_epochs_paid_over, 10);
-        const daysPassed = Math.floor((currentDate - startTime) / (1000 * 60 * 60 * 24));
-        const remainingDays = durationDays - daysPassed > 0 ? durationDays - daysPassed : 0; // Ensure remaining days is not negative
-
-        response += `Start Time: ${startTime.toLocaleDateString()}\n`;
-        response += `Duration: ${durationDays} days\n`;
-        response += `Remaining Days: ${remainingDays}\n`; // Add remaining days to the response
-        response += `Coin: ${incentive.coins.map(coin => `${coin.denom}\nAmount: ${coin.amount}`).join('\n')}\n\n`;
-    });
-
-    return response;
-}
 
 // Function to handle main menu actions based on user selection
 async function handleMainMenuAction(ctx, action, chain) {
@@ -808,32 +639,8 @@ async function handleMainMenuAction(ctx, action, chain) {
             case 'ibc_id':
                 await ctx.reply(`Enter IBC denom for ${userAction.chain}:`, { parse_mode: 'Markdown' });
                 break;
-            case 'pool_incentives':
-                if (userAction.chain === 'osmosis') {
-                    await ctx.reply('Enter pool_id for osmosis:');
-                    expectedAction[userId] = 'awaiting_pool_id';
-                } else {
-                    await ctx.reply('Pool incentives are only available for Osmosis.');
-                }
-                break;
             default:
                 await ctx.reply('Invalid option selected. Please try again.');
-                break;
-            case 'pool_info':
-                if (userAction.chain === 'osmosis') {
-                    await ctx.reply('Enter pool_id for Osmosis:');
-                    expectedAction[userId] = 'awaiting_pool_id_info';
-                } else {
-                    await ctx.reply('Pool info is only available for Osmosis.');
-                }
-                break;
-                case 'price_info':
-                if (userAction.chain === 'osmosis') {
-                    await ctx.reply('Enter token ticker for Price Info:');
-                    expectedAction[userId] = 'awaiting_token_ticker'; // Set the expected action to await ticker
-                } else {
-                    await ctx.reply('Price info is only available for Osmosis.');
-                }
                 break;
 
                     }
@@ -843,89 +650,8 @@ async function handleMainMenuAction(ctx, action, chain) {
     }
 }
 
-async function handlePriceInfo(ctx, tokenTicker) {
-    try {
-        const priceInfoUrl = `https://api.osmosis.zone/tokens/v2/price/${tokenTicker}`;
-        const response = await fetch(priceInfoUrl);
-        if (!response.ok) {
-            throw new Error('Error fetching price information.');
-        }
-        const priceData = await response.json();
-        let formattedResponse = `Token: ${tokenTicker.toUpperCase()}\n`;
-        formattedResponse += `Price: \`${priceData.price}\`\n`; // Formatting with backticks for monospace
-        formattedResponse += `24h Change: \`${priceData['24h_change']}%\``; // Adding '%' for clarity
-        await ctx.reply(formattedResponse, { parse_mode: 'Markdown' });
-    } catch (error) {
-        console.error('Error fetching price info:', error);
-        await ctx.reply('Error fetching price information. Please try again.');
-    }
-}
 
-async function handlePoolInfo(ctx, poolId) {
-    const userAction = userLastAction[ctx.from.id];
-    if (!userAction || userAction.chain !== 'osmosis') {
-        await ctx.reply('The "Pool Info" feature is only available for the Osmosis chain.');
-        return;
-    }
 
-    try {
-        const chainInfoResult = await chainInfo(ctx, userAction.chain);
-        if (!chainInfoResult || !chainInfoResult.data || !chainInfoResult.data.restAddress) {
-            ctx.reply('Error: Healthy REST address not found for the selected chain.');
-            return;
-        }
-
-        let restAddress = chainInfoResult.data.restAddress.replace(/\/+$/, '');
-        const poolTypeUrl = `${restAddress}/osmosis/gamm/v1beta1/pools/${poolId}`;
-        const response = await fetch(poolTypeUrl);
-        if (!response.ok) {
-            throw new Error('Error fetching pool information.');
-        }
-        const poolData = await response.json();
-        const poolType = poolData.pool["@type"];
-        const formattedResponse = await formatPoolInfoResponse(ctx, poolData, userAction.chain);
-        ctx.reply(formattedResponse);
-    } catch (error) {
-        console.error('Error fetching pool info:', error);
-        ctx.reply('Error fetching pool information. Please try again.');
-    }
-}
-
-async function formatPoolInfoResponse(ctx, poolData, chain) {
-    let formattedResponse = '';
-    const poolType = poolData.pool["@type"];
-
-    if (poolType.includes("/osmosis.gamm.v1beta1.Pool") || poolType.includes("/osmosis.gamm.poolmodels.stableswap.v1beta1.Pool")) {
-        // Gamm pool formatting
-        formattedResponse += `Pool Type: Gamm Pool\n`;
-        formattedResponse += `ID: ${poolData.pool.id}\n`;
-        formattedResponse += `Address: ${poolData.pool.address}\n`;
-        formattedResponse += `Swap Fee: ${poolData.pool.pool_params.swap_fee}\n`;
-        formattedResponse += `Exit Fee: ${poolData.pool.pool_params.exit_fee}\n`;
-
-        for (const asset of poolData.pool.pool_assets) {
-            const baseDenom = await queryIbcId(ctx, asset.token.denom.split('/')[1], chain, true);
-            formattedResponse += `Token: ${baseDenom || asset.token.denom}\n`;
-            formattedResponse += `[denom:\`${asset.token.denom}\`]\n`; // Include baseDenom in monospace
-        }
-    } else if (poolType.includes("/osmosis.concentratedliquidity.v1beta1.Pool")) {
-        // Concentrated liquidity pool formatting
-        formattedResponse += `Pool Type: Concentrated Liquidity Pool\n`;
-        formattedResponse += `ID: ${poolData.pool.id}\n`;
-        formattedResponse += `Address: ${poolData.pool.address}\n`;
-        formattedResponse += `Swap Fee: ${poolData.pool.spread_factor}\n`;
-
-        const tokens = [poolData.pool.token0, poolData.pool.token1];
-        for (const token of tokens) {
-            const baseDenom = await queryIbcId(ctx, token.split('/')[1], chain, true);
-            formattedResponse += `Token: ${baseDenom || token}\n`;
-        }
-    } else {
-        formattedResponse = 'Unsupported pool type or format.';
-    }
-
-    return formattedResponse;
-}
 
 function sendMainMenu(ctx, userId) {
     const userAction = userLastAction[userId];
@@ -936,15 +662,10 @@ function sendMainMenu(ctx, userId) {
         Markup.button.callback('4. Block Explorers', 'block_explorers')
     ];
 
-    // Add IBC-ID and Pool Incentives buttons only for mainnet chains
-if (!userAction.browsingTestnets) {
-    mainMenuButtons.push(Markup.button.callback('5. IBC-ID', 'ibc_id'));
-    if (userAction.chain === 'osmosis') {
-        mainMenuButtons.push(Markup.button.callback('6. LP Incentives', 'pool_incentives'));
-        mainMenuButtons.push(Markup.button.callback('7. Pool Info', 'pool_info'));
-        mainMenuButtons.push(Markup.button.callback('8. Price Info', 'price_info'));
+    // Add IBC-ID button only for mainnet chains
+    if (!userAction.browsingTestnets) {
+        mainMenuButtons.push(Markup.button.callback('5. IBC-ID', 'ibc_id'));
     }
-}
 
     // Add back button to return to chain selection
     mainMenuButtons.push(Markup.button.callback('← Back to Chains', 'back_to_chains'));
@@ -1080,36 +801,21 @@ bot.action('ibc_id', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId];
     if (userAction && userAction.chain) {
-        await editOrSendMessage(ctx, userId, `Enter IBC denom for ${userAction.chain}:`);
+        // Delete the menu message to reduce clutter
+        try {
+            await ctx.deleteMessage();
+        } catch (error) {
+            console.error('Error deleting menu message:', error);
+        }
+        // Send a new message prompting for input
+        await ctx.reply(`Enter IBC denom for ${userAction.chain}:`);
         expectedAction[userId] = 'awaiting_ibc_denom';
     } else {
-        await editOrSendMessage(ctx, userId, 'No chain selected. Please select a chain first.');
+        await ctx.reply('No chain selected. Please select a chain first.');
     }
 });
 
-bot.action('pool_incentives', async (ctx) => {
-    const userId = ctx.from.id;
-    const userAction = userLastAction[userId];
-    if (userAction && userAction.chain === 'osmosis') {
-        await editOrSendMessage(ctx, userId, 'Enter pool_id for Osmosis:');
-        expectedAction[userId] = 'awaiting_pool_id';
-    } else if (userAction && userAction.chain) {
-        await editOrSendMessage(ctx, userId, 'Pool incentives are only available for Osmosis.');
-    } else {
-        await editOrSendMessage(ctx, userId, 'No chain selected. Please select a chain first.');
-    }
-});
 
-bot.action('price_info', async (ctx) => {
-    const userId = ctx.from.id;
-    const userAction = userLastAction[userId];
-    if (userAction && userAction.chain === 'osmosis') {
-        await editOrSendMessage(ctx, userId, 'Enter token ticker for Price Info:');
-        expectedAction[userId] = 'awaiting_token_ticker'; // Prepare to handle the token ticker input
-    } else {
-        await editOrSendMessage(ctx, userId, 'Price info is only available for Osmosis.');
-    }
-});
 
 bot.on('text', async (ctx) => {
     const text = ctx.message.text.trim().toLowerCase();
@@ -1138,33 +844,10 @@ bot.on('text', async (ctx) => {
             await editOrSendMessage(ctx, userId, 'Please enter a valid IBC denom (format: ibc/HASH)');
         }
         delete expectedAction[userId];
-    //  'awaiting_token_ticker' expected action
-    } else if (expectedAction[userId] === 'awaiting_token_ticker') {
-        // Call the function to handle Price Info
-        await handlePriceInfo(ctx, text);
-        delete expectedAction[userId]; // Clear the expected action after handling
-    } else if (expectedAction[userId] === 'awaiting_pool_id') {
-        // Handle pool ID input for Pool Incentives
-        const poolId = parseInt(text, 10);
-        if (isNaN(poolId)) {
-            await ctx.reply('Please enter a valid pool_id.');
-        } else {
-            await handlePoolIncentives(ctx, poolId);
-            delete expectedAction[userId];
-        }
-    } else if (expectedAction[userId] === 'awaiting_pool_id_info') { // New condition for Pool Info
-        // Assuming pool IDs are numeric. Adjust if your IDs are different.
-        const poolId = parseInt(text, 10);
-        if (isNaN(poolId)) {
-            await ctx.reply('Please enter a valid pool_id for Pool Info.');
-        } else {
-            await handlePoolInfo(ctx, poolId); // Call the function to handle Pool Info
-            delete expectedAction[userId]; // Clear the expected action after handling
-        }
     } else if (!isNaN(text)) {
         // Numeric input for menu selection
         const optionIndex = parseInt(text) - 1;
-        const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id', 'pool_incentives', 'pool_info', 'price_info'];
+        const mainMenuOptions = ['chain_info', 'peer_nodes', 'endpoints', 'block_explorers', 'ibc_id'];
         console.log(`User selected menu option number: ${optionIndex + 1}`);
         if (optionIndex >= 0 && optionIndex < mainMenuOptions.length) {
             const action = mainMenuOptions[optionIndex];
@@ -1274,7 +957,14 @@ bot.action('chain_info', async (ctx) => {
     if (userAction && userAction.chain) {
         const chainInfoResult = await chainInfo(ctx, userAction.chain);
         if (chainInfoResult && chainInfoResult.message) {
-            await editOrSendMessage(ctx, userId, chainInfoResult.message, {
+            // Delete the menu message to reduce clutter
+            try {
+                await ctx.deleteMessage();
+            } catch (error) {
+                console.error('Error deleting menu message:', error);
+            }
+            // Send a new message with the chain info
+            await ctx.reply(chainInfoResult.message, {
                 parse_mode: 'Markdown',
                 disable_web_page_preview: true,
             });
@@ -1301,27 +991,20 @@ bot.action('endpoints', async (ctx) => {
 
         console.log('Formatted Endpoints:', endpoints);
         try {
-            if (userAction.messageId) {
-                await ctx.telegram.editMessageText(
-                    userAction.chatId,
-                    userAction.messageId,
-                    null,
-                    endpoints,
-                    {
-                        parse_mode: 'Markdown',
-                        disable_web_page_preview: true,
-                    }
-                );
-            } else {
-                const sentMessage = await ctx.reply(endpoints, { parse_mode: 'Markdown' });
-                updateUserLastAction(userId, {
-                    messageId: sentMessage.message_id,
-                    chatId: sentMessage.chat.id
-                });
+            // Delete the menu message to reduce clutter
+            try {
+                await ctx.deleteMessage();
+            } catch (error) {
+                console.error('Error deleting menu message:', error);
             }
+            // Send a new message with the endpoints
+            await ctx.reply(endpoints, { 
+                parse_mode: 'Markdown',
+                disable_web_page_preview: true,
+            });
         } catch (error) {
-            console.error('Error editing message:', error);
-            // Since the catch block does not contain a reply, consider adding one if needed
+            console.error('Error sending endpoints:', error);
+            await ctx.reply('An error occurred while sending the endpoints. Please try again.');
         }
     } else {
         await ctx.reply('No chain selected. Please select a chain first.');
@@ -1335,29 +1018,23 @@ bot.action('peer_nodes', async (ctx) => {
         const peer_nodes = await chainPeerNodes(ctx, userAction.chain);
 
         try {
-            if (userAction.messageId) {
-                await ctx.telegram.editMessageText(
-                    userAction.chatId,
-                    userAction.messageId,
-                    null,
-                    peer_nodes,
-                    { parse_mode: 'Markdown',
-                        disable_web_page_preview: true,
-                    }
-                );
-            } else {
-                const sentMessage = await ctx.reply(peer_nodes, { parse_mode: 'Markdown' });
-                updateUserLastAction(userId, {
-                    messageId: sentMessage.message_id,
-                    chatId: sentMessage.chat.id
-                });
+            // Delete the menu message to reduce clutter
+            try {
+                await ctx.deleteMessage();
+            } catch (error) {
+                console.error('Error deleting menu message:', error);
             }
+            // Send a new message with the peer nodes
+            await ctx.reply(peer_nodes, { 
+                parse_mode: 'Markdown',
+                disable_web_page_preview: true,
+            });
         } catch (error) {
-            console.error('Error editing message:', error);
-            // Handle error by sending new message
+            console.error('Error sending peer nodes:', error);
+            await ctx.reply('An error occurred while sending the peer nodes. Please try again.');
         }
     } else {
-        ctx.reply('No chain selected. Please select a chain first.');
+        await ctx.reply('No chain selected. Please select a chain first.');
     }
 });
 
@@ -1368,23 +1045,19 @@ bot.action('block_explorers', async (ctx) => {
         const block_explorers = await chainBlockExplorers(ctx, userAction.chain);
 
         try {
-            if (userAction.messageId) {
-                await ctx.telegram.editMessageText(
-                    userAction.chatId,
-                    userAction.messageId,
-                    null,
-                    block_explorers,
-                    { parse_mode: 'Markdown', disable_web_page_preview: true }
-                );
-            } else {
-                const sentMessage = await ctx.reply(block_explorers, { parse_mode: 'Markdown', disable_web_page_preview: true });
-                updateUserLastAction(userId, {
-                    messageId: sentMessage.message_id,
-                    chatId: sentMessage.chat.id
-                });
+            // Delete the menu message to reduce clutter
+            try {
+                await ctx.deleteMessage();
+            } catch (error) {
+                console.error('Error deleting menu message:', error);
             }
+            // Send a new message with the block explorers
+            await ctx.reply(block_explorers, { 
+                parse_mode: 'Markdown', 
+                disable_web_page_preview: true 
+            });
         } catch (error) {
-            console.error('Error editing message:', error);
+            console.error('Error sending block explorers:', error);
             await ctx.reply('An error occurred while processing your request. Please try again.');
         }
     } else {
@@ -1392,16 +1065,6 @@ bot.action('block_explorers', async (ctx) => {
     }
 });
 
-bot.action('pool_info', async (ctx) => {
-    const userId = ctx.from.id;
-    const userAction = userLastAction[userId];
-    if (userAction && userAction.chain === 'osmosis') {
-        await editOrSendMessage(ctx, userId, 'Enter pool_id for Osmosis:');
-        expectedAction[userId] = 'awaiting_pool_id_info'; // Set the expected action to await pool ID input
-    } else {
-        await editOrSendMessage(ctx, userId, 'The "Pool Info" feature is only available for the Osmosis chain.');
-    }
-});
 
 bot.action('switch_to_mainnet', async (ctx) => {
     const userId = ctx.from.id;
