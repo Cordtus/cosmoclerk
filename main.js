@@ -123,6 +123,7 @@ function resetUserSession(userId) {
 function updateUserLastAction(userId, data) {
     if (data) {
         userLastAction[userId] = {
+            ...(userLastAction[userId] || {}),  // Preserve existing state
             ...data,
             timestamp: new Date()
         };
@@ -618,6 +619,7 @@ async function handleMainMenuAction(ctx, action, chain) {
                     await ctx.reply(chainInfoResult.message, {
                         parse_mode: 'Markdown',
                         disable_web_page_preview: true,
+                        reply_markup: createFollowUpKeyboard().reply_markup
                     });
                 } else {
                     console.error('Unexpected result from chainInfo:', chainInfoResult);
@@ -626,18 +628,31 @@ async function handleMainMenuAction(ctx, action, chain) {
                 break;
             case 'peer_nodes':
                 const peerNodesMessage = await chainPeerNodes(ctx, userAction.chain);
-                await ctx.reply(peerNodesMessage, { parse_mode: 'Markdown' });
+                await ctx.reply(peerNodesMessage, { 
+                    parse_mode: 'Markdown',
+                    reply_markup: createFollowUpKeyboard().reply_markup
+                });
                 break;
             case 'endpoints':
-                await chainEndpoints(ctx, userAction.chain);
+                const endpointsMessage = await chainEndpoints(ctx, userAction.chain);
+                await ctx.reply(endpointsMessage, {
+                    parse_mode: 'Markdown',
+                    disable_web_page_preview: true,
+                    reply_markup: createFollowUpKeyboard().reply_markup
+                });
                 break;
 
             case 'block_explorers':
                 const blockExplorersMessage = await chainBlockExplorers(ctx, userAction.chain);
-                await ctx.replyWithMarkdown(blockExplorersMessage);
+                await ctx.reply(blockExplorersMessage, {
+                    parse_mode: 'Markdown',
+                    disable_web_page_preview: true,
+                    reply_markup: createFollowUpKeyboard().reply_markup
+                });
                 break;
             case 'ibc_id':
                 await ctx.reply(`Enter IBC denom for ${userAction.chain}:`, { parse_mode: 'Markdown' });
+                expectedAction[userId] = 'awaiting_ibc_denom';
                 break;
             default:
                 await ctx.reply('Invalid option selected. Please try again.');
@@ -667,12 +682,19 @@ function sendMainMenu(ctx, userId) {
         mainMenuButtons.push(Markup.button.callback('5. IBC-ID', 'ibc_id'));
     }
 
-    // Add back button to return to chain selection
-    mainMenuButtons.push(Markup.button.callback('← Back to Chains', 'back_to_chains'));
+    // Add back button to return to network selection
+    mainMenuButtons.push(Markup.button.callback('← Back to Networks', 'back_to_networks'));
 
     return Markup.inlineKeyboard(mainMenuButtons, { columns: 2 });
 }
 
+// Function to create follow-up keyboard after action results
+function createFollowUpKeyboard() {
+    return Markup.inlineKeyboard([
+        [Markup.button.callback('← Back to Networks', 'back_to_networks')],
+        [Markup.button.callback('↩️ Back to Actions', 'back_to_actions')]
+    ]);
+}
 
 function paginateChains(chains, currentPage, userId, pageSize) {
     console.log(`Paginating chains. Total chains: ${chains.length}, Current page: ${currentPage}, Page size: ${pageSize}`);
@@ -835,13 +857,19 @@ bot.on('text', async (ctx) => {
             if (userAction && userAction.chain) {
                 const baseDenom = await queryIbcId(ctx, ibcHash, userAction.chain, true);
                 if (baseDenom) {
-                    await editOrSendMessage(ctx, userId, `Base Denomination: ${baseDenom}`);
+                    await ctx.reply(`Base Denomination: ${baseDenom}`, {
+                        reply_markup: createFollowUpKeyboard().reply_markup
+                    });
                 } else {
-                    await editOrSendMessage(ctx, userId, 'Failed to fetch IBC denom trace or it does not exist.');
+                    await ctx.reply('Failed to fetch IBC denom trace or it does not exist.', {
+                        reply_markup: createFollowUpKeyboard().reply_markup
+                    });
                 }
             }
         } else {
-            await editOrSendMessage(ctx, userId, 'Please enter a valid IBC denom (format: ibc/HASH)');
+            await ctx.reply('Please enter a valid IBC denom (format: ibc/HASH)', {
+                reply_markup: createFollowUpKeyboard().reply_markup
+            });
         }
         delete expectedAction[userId];
     } else if (!isNaN(text)) {
@@ -866,9 +894,13 @@ bot.on('text', async (ctx) => {
         if (userAction && userAction.chain) {
             const baseDenom = await queryIbcId(ctx, ibcHash, userAction.chain, true);
             if (baseDenom) {
-                await ctx.reply(`Base Denomination: ${baseDenom}`);
+                await ctx.reply(`Base Denomination: ${baseDenom}`, {
+                    reply_markup: createFollowUpKeyboard().reply_markup
+                });
             } else {
-                await ctx.reply('Failed to fetch IBC denom trace or it does not exist.');
+                await ctx.reply('Failed to fetch IBC denom trace or it does not exist.', {
+                    reply_markup: createFollowUpKeyboard().reply_markup
+                });
             }
         } else {
             await ctx.reply('No chain selected. Please select a chain first.');
@@ -879,16 +911,21 @@ bot.on('text', async (ctx) => {
         const testnetChains = await getTestnetsList();
         
         // Check mainnet chains first
-        if (mainnetChains.map(chain => chain.toLowerCase()).includes(text)) {
-            // Convert the selected chain to its original case as needed or maintain lowercase
-            updateUserLastAction(userId, { chain: text, browsingTestnets: false });
+        const mainnetChainIndex = mainnetChains.findIndex(chain => chain.toLowerCase() === text);
+        const testnetChainIndex = testnetChains.findIndex(chain => chain.toLowerCase() === text);
+        
+        if (mainnetChainIndex !== -1) {
+            // Store the actual chain name with proper case
+            const actualChainName = mainnetChains[mainnetChainIndex];
+            updateUserLastAction(userId, { chain: actualChainName, browsingTestnets: false });
             const keyboardMarkup = sendMainMenu(ctx, userId);
-            await ctx.reply('Select an action:', keyboardMarkup);
-        } else if (testnetChains.map(chain => chain.toLowerCase()).includes(text)) {
-            // It's a testnet chain
-            updateUserLastAction(userId, { chain: text, browsingTestnets: true });
+            await ctx.reply(`Selected chain: ${actualChainName}\nSelect an action:`, keyboardMarkup);
+        } else if (testnetChainIndex !== -1) {
+            // Store the actual chain name with proper case
+            const actualChainName = testnetChains[testnetChainIndex];
+            updateUserLastAction(userId, { chain: actualChainName, browsingTestnets: true });
             const keyboardMarkup = sendMainMenu(ctx, userId);
-            await ctx.reply('Select an action:', keyboardMarkup);
+            await ctx.reply(`Selected chain: ${actualChainName}\nSelect an action:`, keyboardMarkup);
         } else {
             // Fallback for unrecognized commands
             await ctx.reply('Unrecognized command. Please try again or use the menu options.');
@@ -963,10 +1000,11 @@ bot.action('chain_info', async (ctx) => {
             } catch (error) {
                 console.error('Error deleting menu message:', error);
             }
-            // Send a new message with the chain info
+            // Send a new message with the chain info and follow-up keyboard
             await ctx.reply(chainInfoResult.message, {
                 parse_mode: 'Markdown',
                 disable_web_page_preview: true,
+                reply_markup: createFollowUpKeyboard().reply_markup
             });
         } else {
             console.error('Unexpected result from chainInfo:', chainInfoResult);
@@ -997,10 +1035,11 @@ bot.action('endpoints', async (ctx) => {
             } catch (error) {
                 console.error('Error deleting menu message:', error);
             }
-            // Send a new message with the endpoints
+            // Send a new message with the endpoints and follow-up keyboard
             await ctx.reply(endpoints, { 
                 parse_mode: 'Markdown',
                 disable_web_page_preview: true,
+                reply_markup: createFollowUpKeyboard().reply_markup
             });
         } catch (error) {
             console.error('Error sending endpoints:', error);
@@ -1024,10 +1063,11 @@ bot.action('peer_nodes', async (ctx) => {
             } catch (error) {
                 console.error('Error deleting menu message:', error);
             }
-            // Send a new message with the peer nodes
+            // Send a new message with the peer nodes and follow-up keyboard
             await ctx.reply(peer_nodes, { 
                 parse_mode: 'Markdown',
                 disable_web_page_preview: true,
+                reply_markup: createFollowUpKeyboard().reply_markup
             });
         } catch (error) {
             console.error('Error sending peer nodes:', error);
@@ -1051,10 +1091,11 @@ bot.action('block_explorers', async (ctx) => {
             } catch (error) {
                 console.error('Error deleting menu message:', error);
             }
-            // Send a new message with the block explorers
+            // Send a new message with the block explorers and follow-up keyboard
             await ctx.reply(block_explorers, { 
                 parse_mode: 'Markdown', 
-                disable_web_page_preview: true 
+                disable_web_page_preview: true,
+                reply_markup: createFollowUpKeyboard().reply_markup
             });
         } catch (error) {
             console.error('Error sending block explorers:', error);
@@ -1096,7 +1137,7 @@ bot.action('switch_to_testnet', async (ctx) => {
     });
 });
 
-bot.action('back_to_chains', async (ctx) => {
+bot.action('back_to_networks', async (ctx) => {
     const userId = ctx.from.id;
     const userAction = userLastAction[userId] || {};
     
@@ -1119,6 +1160,24 @@ bot.action('back_to_chains', async (ctx) => {
         chat_id: ctx.callbackQuery.message.chat.id,
         message_id: ctx.callbackQuery.message.message_id
     });
+});
+
+bot.action('back_to_actions', async (ctx) => {
+    const userId = ctx.from.id;
+    const userAction = userLastAction[userId];
+    
+    if (userAction && userAction.chain) {
+        const keyboardMarkup = sendMainMenu(ctx, userId);
+        await ctx.editMessageText(`Selected chain: ${userAction.chain}\nSelect an action:`, {
+            parse_mode: 'Markdown',
+            disable_web_page_preview: true,
+            reply_markup: keyboardMarkup.reply_markup,
+            chat_id: ctx.callbackQuery.message.chat.id,
+            message_id: ctx.callbackQuery.message.message_id
+        });
+    } else {
+        await ctx.reply('No chain selected. Please select a chain first.');
+    }
 });
 
 // Clear stored message details if needed
