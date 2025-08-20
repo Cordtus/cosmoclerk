@@ -1,3 +1,6 @@
 .env
 node_modules/
 chain_registry/
+chain-registry1/
+target/
+Cargo.lock
