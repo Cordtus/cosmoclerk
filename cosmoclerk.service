@@ -1,0 +1,44 @@
+[Unit]
+Description=CosmoClerk Telegram Bot
+Documentation=https://github.com/yourusername/cosmoclerk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cosmoclerk
+Group=cosmoclerk
+
+# Binary location (assuming you meant /usr/local/bin/)
+ExecStart=/usr/local/bin/cosmoclerk
+
+# Working directory where .env file is located
+WorkingDirectory=/etc/cosmoclerk
+
+# Environment variables (uncomment and set if not using .env file)
+#Environment="BOT_TOKEN=your_telegram_bot_token_here"
+#Environment="RUST_LOG=info"
+
+# Restart policy
+Restart=always
+RestartSec=10
+
+# Security hardening
+# Note: These settings are disabled for LXD container compatibility
+NoNewPrivileges=true
+#PrivateTmp=true
+#ProtectSystem=strict
+#ProtectHome=true
+#ReadWritePaths=/var/log/cosmoclerk
+
+# Resource limits
+MemoryLimit=256M
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cosmoclerk
+
+[Install]
+WantedBy=multi-user.target

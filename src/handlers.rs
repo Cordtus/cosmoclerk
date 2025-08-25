@@ -349,7 +349,7 @@ pub async fn handle_chain_action(
     dialogue: MyDialogue,
     cache: Arc<RegistryCache>,
     q: CallbackQuery,
-    chain: String,
+    (chain, _message_id): (String, Option<teloxide::types::MessageId>),
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(ref data) = q.data {
         match data.as_str() {
@@ -799,7 +799,10 @@ pub async fn handle_text(
                 ],
             ];
             
-            if !text_lower.contains("testnet") {
+            // Add IBC option for mainnets
+            // Check if it's a testnet by seeing if it's in the testnets list
+            let testnets = cache.list_testnets().await.unwrap_or_default();
+            if !testnets.iter().any(|t| t.to_lowercase() == text_lower) {
                 buttons.push(vec![InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id")]);
             }
             
