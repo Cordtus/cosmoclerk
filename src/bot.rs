@@ -60,6 +60,8 @@ fn schema() -> UpdateHandler<Box<dyn std::error::Error + Send + Sync + 'static>>
     let callback_handler = Update::filter_callback_query()
         .branch(case![State::SelectingChain { page, is_testnet, message_id, last_selected_chain }].endpoint(handlers::handle_chain_selection))
         .branch(case![State::ChainSelected { chain, message_id }].endpoint(handlers::handle_chain_action))
+        .branch(case![State::AwaitingIbcDenom { chain, message_id }].endpoint(handlers::handle_chain_action))
+        .branch(case![State::Start].endpoint(handlers::handle_callback))
         .branch(dptree::endpoint(handlers::handle_callback));
 
     dialogue::enter::<Update, InMemStorage<State>, State, _>()

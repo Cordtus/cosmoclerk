@@ -709,8 +709,106 @@ pub async fn handle_text(
                                     bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
                                 }
                             }
-                            "peer_nodes" | "endpoints" | "explorers" => {
-                                bot.send_message(msg.chat.id, format!("Please use the menu buttons for {} information.", action.replace('_', " "))).await?;
+                            "peer_nodes" => {
+                                // Show peer nodes directly
+                                let chain_data = cache.get_chain(&chain).await?;
+                                
+                                if let Some(chain_info) = chain_data {
+                                    let mut message = String::from("*Seed Nodes*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n");
+                                    
+                                    for seed in chain_info.peers.seeds.iter().take(5) {
+                                        let provider = seed.provider.as_deref().unwrap_or("unknown");
+                                        message.push_str(&format!(
+                                            "*{}*:\nid: `{}`\nURL: `{}`\n\n",
+                                            escape_markdown(provider),
+                                            escape_markdown(&seed.id),
+                                            escape_markdown(&seed.address)
+                                        ));
+                                    }
+                                    
+                                    message.push_str("\n*Persistent Peers*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n");
+                                    
+                                    for peer in chain_info.peers.persistent_peers.iter().take(5) {
+                                        message.push_str(&format!(
+                                            "id: `{}`\nURL: `{}`\n\n",
+                                            escape_markdown(&peer.id),
+                                            escape_markdown(&peer.address)
+                                        ));
+                                    }
+                                    
+                                    bot.send_message(msg.chat.id, message)
+                                        .parse_mode(ParseMode::MarkdownV2)
+                                        .await?;
+                                } else {
+                                    bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
+                                }
+                            }
+                            "endpoints" => {
+                                // Show endpoints directly
+                                let chain_data = cache.get_chain(&chain).await?;
+                                
+                                if let Some(chain_info) = chain_data {
+                                    let mut message = String::from("*RPC*\n\\-\\-\\-\n");
+                                    
+                                    for rpc in chain_info.apis.rpc.iter().take(5) {
+                                        let provider = rpc.provider.as_deref().unwrap_or("unknown");
+                                        message.push_str(&format!(
+                                            "*{}*:\n`{}`\n\n",
+                                            escape_markdown(provider),
+                                            escape_markdown(&rpc.address)
+                                        ));
+                                    }
+                                    
+                                    message.push_str("\n*REST*\n\\-\\-\\-\\-\n");
+                                    
+                                    for rest in chain_info.apis.rest.iter().take(5) {
+                                        let provider = rest.provider.as_deref().unwrap_or("unknown");
+                                        message.push_str(&format!(
+                                            "*{}*:\n`{}`\n\n",
+                                            escape_markdown(provider),
+                                            escape_markdown(&rest.address)
+                                        ));
+                                    }
+                                    
+                                    message.push_str("\n*GRPC*\n\\-\\-\\-\\-\n");
+                                    
+                                    for grpc in chain_info.apis.grpc.iter().take(5) {
+                                        let provider = grpc.provider.as_deref().unwrap_or("unknown");
+                                        message.push_str(&format!(
+                                            "*{}*:\n`{}`\n\n",
+                                            escape_markdown(provider),
+                                            escape_markdown(&grpc.address)
+                                        ));
+                                    }
+                                    
+                                    bot.send_message(msg.chat.id, message)
+                                        .parse_mode(ParseMode::MarkdownV2)
+                                        .await?;
+                                } else {
+                                    bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
+                                }
+                            }
+                            "explorers" => {
+                                // Show explorers directly
+                                let chain_data = cache.get_chain(&chain).await?;
+                                
+                                if let Some(chain_info) = chain_data {
+                                    let mut message = String::from("*Block Explorers*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n\n");
+                                    
+                                    for explorer in &chain_info.explorers {
+                                        message.push_str(&format!(
+                                            "*{}*:\n`{}`\n\n",
+                                            escape_markdown(&explorer.kind),
+                                            escape_markdown(&explorer.url)
+                                        ));
+                                    }
+                                    
+                                    bot.send_message(msg.chat.id, message)
+                                        .parse_mode(ParseMode::MarkdownV2)
+                                        .await?;
+                                } else {
+                                    bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
+                                }
                             }
                             "ibc_id" => {
                                 dialogue.update(State::AwaitingIbcDenom { chain, message_id: Some(msg.id) }).await?;
@@ -827,8 +925,22 @@ pub async fn handle_text(
 
 pub async fn handle_callback(
     bot: Bot,
+    dialogue: MyDialogue,
+    _cache: Arc<RegistryCache>,
     q: CallbackQuery,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // This is a fallback handler for callbacks that don't match expected states
+    // Reset the dialogue and prompt user to start over
+    dialogue.reset().await?;
+    
+    if let Some(Message { chat, .. }) = &q.message {
+        bot.send_message(
+            chat.id,
+            "Session expired or invalid state. Please use /start to begin again.",
+        )
+        .await?;
+    }
+    
     bot.answer_callback_query(q.id).await?;
     Ok(())
 }

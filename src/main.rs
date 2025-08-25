@@ -3,6 +3,7 @@ mod cache;
 mod commands;
 mod handlers;
 mod utils;
+mod tests;
 
 use anyhow::Result;
 use dotenv::dotenv;
