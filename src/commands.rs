@@ -9,4 +9,12 @@ pub enum Command {
     Restart,
     #[command(description = "Display help")]
     Help,
+    #[command(description = "Show testnet chains")]
+    Testnet,
+    #[command(description = "Show testnet chains")]
+    Testnets,
+    #[command(description = "Show mainnet chains")]
+    Mainnet,
+    #[command(description = "Show mainnet chains")]
+    Mainnets,
 }

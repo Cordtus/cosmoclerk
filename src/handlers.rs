@@ -1,7 +1,6 @@
 use crate::{
-    bot::{MyDialogue, PoolAction, State},
+    bot::{MyDialogue, State},
     cache::RegistryCache,
-    commands::Command,
     utils::{escape_markdown, find_healthy_endpoint, find_healthy_rest_endpoint, query_ibc_denom, PAGE_SIZE},
 };
 use std::sync::Arc;
@@ -13,20 +12,27 @@ use teloxide::{
 pub async fn start(
     bot: Bot,
     dialogue: MyDialogue,
+    cache: Arc<RegistryCache>,
     msg: Message,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    dialogue.update(State::SelectingChain { page: 0, is_testnet: false }).await?;
-    show_chain_selection(&bot, &msg, 0, false).await?;
+    dialogue.update(State::SelectingChain { 
+        page: 0, 
+        is_testnet: false, 
+        message_id: None, 
+        last_selected_chain: None 
+    }).await?;
+    show_chain_selection(&bot, &msg, &cache, 0, false, None).await?;
     Ok(())
 }
 
 pub async fn restart(
     bot: Bot,
     dialogue: MyDialogue,
+    cache: Arc<RegistryCache>,
     msg: Message,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     dialogue.reset().await?;
-    start(bot, dialogue, msg).await
+    start(bot, dialogue, cache, msg).await
 }
 
 pub async fn help(
@@ -46,13 +52,46 @@ pub async fn help(
     Ok(())
 }
 
+pub async fn show_testnets(
+    bot: Bot,
+    dialogue: MyDialogue,
+    cache: Arc<RegistryCache>,
+    msg: Message,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    dialogue.update(State::SelectingChain { 
+        page: 0, 
+        is_testnet: true, 
+        message_id: None,
+        last_selected_chain: None 
+    }).await?;
+    show_chain_selection(&bot, &msg, &cache, 0, true, None).await?;
+    Ok(())
+}
+
+pub async fn show_mainnets(
+    bot: Bot,
+    dialogue: MyDialogue,
+    cache: Arc<RegistryCache>,
+    msg: Message,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    dialogue.update(State::SelectingChain { 
+        page: 0, 
+        is_testnet: false, 
+        message_id: None,
+        last_selected_chain: None 
+    }).await?;
+    show_chain_selection(&bot, &msg, &cache, 0, false, None).await?;
+    Ok(())
+}
+
 async fn show_chain_selection(
     bot: &Bot,
     msg: &Message,
+    cache: &Arc<RegistryCache>,
     page: usize,
     is_testnet: bool,
+    last_selected: Option<&String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let cache = RegistryCache::new(30);
     let chains = cache.list_chains().await?;
     
     let filtered_chains: Vec<String> = if is_testnet {
@@ -71,7 +110,14 @@ async fn show_chain_selection(
     for chunk in page_chains.chunks(3) {
         let row: Vec<InlineKeyboardButton> = chunk
             .iter()
-            .map(|chain| InlineKeyboardButton::callback(chain, format!("select:{}", chain)))
+            .map(|chain| {
+                let display_name = if last_selected.map_or(false, |s| s == chain) {
+                    format!("🔴 {}", chain)
+                } else {
+                    chain.clone()
+                };
+                InlineKeyboardButton::callback(display_name, format!("select:{}", chain))
+            })
             .collect();
         buttons.push(row);
     }
@@ -98,7 +144,7 @@ async fn show_chain_selection(
     
     bot.send_message(
         msg.chat.id,
-        if is_testnet { "Select a testnet:" } else { "Select a chain:" },
+        "Type a chain name, or select from menu:",
     )
     .reply_markup(keyboard)
     .await?;
@@ -111,21 +157,37 @@ pub async fn handle_chain_selection(
     dialogue: MyDialogue,
     cache: Arc<RegistryCache>,
     q: CallbackQuery,
-    (page, is_testnet): (usize, bool),
+    (_page, is_testnet, _message_id, last_selected_chain): (usize, bool, Option<teloxide::types::MessageId>, Option<String>),
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(data) = q.data {
-        if data.starts_with("select:") {
-            let chain = data.strip_prefix("select:").unwrap().to_string();
-            dialogue.update(State::ChainSelected { chain: chain.clone() }).await?;
+    if let Some(ref data) = q.data {
+        if let Some(chain) = data.strip_prefix("select:") {
+            let chain = chain.to_string();
+            let msg_id = q.message.as_ref().map(|m| m.id);
+            dialogue.update(State::ChainSelected { 
+                chain: chain.clone(), 
+                message_id: msg_id 
+            }).await?;
             show_chain_menu(&bot, &q, &chain).await?;
-        } else if data.starts_with("page:") {
-            let new_page: usize = data.strip_prefix("page:").unwrap().parse()?;
-            dialogue.update(State::SelectingChain { page: new_page, is_testnet }).await?;
-            update_chain_selection(&bot, &q, new_page, is_testnet).await?;
-        } else if data.starts_with("toggle_testnet:") {
-            let new_testnet: bool = data.strip_prefix("toggle_testnet:").unwrap().parse()?;
-            dialogue.update(State::SelectingChain { page: 0, is_testnet: new_testnet }).await?;
-            update_chain_selection(&bot, &q, 0, new_testnet).await?;
+        } else if let Some(page_str) = data.strip_prefix("page:") {
+            let new_page: usize = page_str.parse()?;
+            let msg_id = q.message.as_ref().map(|m| m.id);
+            dialogue.update(State::SelectingChain { 
+                page: new_page, 
+                is_testnet,
+                message_id: msg_id,
+                last_selected_chain: last_selected_chain.clone()
+            }).await?;
+            update_chain_selection(&bot, &q, &cache, new_page, is_testnet, last_selected_chain.as_ref()).await?;
+        } else if let Some(testnet_str) = data.strip_prefix("toggle_testnet:") {
+            let new_testnet: bool = testnet_str.parse()?;
+            let msg_id = q.message.as_ref().map(|m| m.id);
+            dialogue.update(State::SelectingChain { 
+                page: 0, 
+                is_testnet: new_testnet,
+                message_id: msg_id,
+                last_selected_chain: None
+            }).await?;
+            update_chain_selection(&bot, &q, &cache, 0, new_testnet, None).await?;
         }
     }
     
@@ -136,10 +198,11 @@ pub async fn handle_chain_selection(
 async fn update_chain_selection(
     bot: &Bot,
     q: &CallbackQuery,
+    cache: &Arc<RegistryCache>,
     page: usize,
     is_testnet: bool,
+    last_selected: Option<&String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let cache = RegistryCache::new(30);
     let chains = cache.list_chains().await?;
     
     let filtered_chains: Vec<String> = if is_testnet {
@@ -158,7 +221,14 @@ async fn update_chain_selection(
     for chunk in page_chains.chunks(3) {
         let row: Vec<InlineKeyboardButton> = chunk
             .iter()
-            .map(|chain| InlineKeyboardButton::callback(chain, format!("select:{}", chain)))
+            .map(|chain| {
+                let display_name = if last_selected.map_or(false, |s| s == chain) {
+                    format!("🔴 {}", chain)
+                } else {
+                    chain.clone()
+                };
+                InlineKeyboardButton::callback(display_name, format!("select:{}", chain))
+            })
             .collect();
         buttons.push(row);
     }
@@ -183,16 +253,58 @@ async fn update_chain_selection(
     
     let keyboard = InlineKeyboardMarkup::new(buttons);
     
-    if let Some(Message { id, chat, .. }) = q.message {
-        bot.edit_message_text(
-            chat.id,
-            id,
-            if is_testnet { "Select a testnet:" } else { "Select a chain:" },
-        )
-        .reply_markup(keyboard)
-        .await?;
-    }
+    edit_callback_message_with_markup(
+        bot,
+        q,
+        if is_testnet { "Select a testnet:" } else { "Select a chain:" }.to_string(),
+        keyboard,
+    )
+    .await?;
     
+    Ok(())
+}
+
+// Helper function to send a message from a callback query (for errors)
+async fn send_callback_message(
+    bot: &Bot,
+    q: &CallbackQuery,
+    text: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(Message { chat, .. }) = &q.message {
+        bot.send_message(chat.id, text).await?;
+    }
+    Ok(())
+}
+
+// Helper function to edit a message from a callback query
+async fn edit_callback_message(
+    bot: &Bot,
+    q: &CallbackQuery,
+    text: String,
+    parse_mode: Option<ParseMode>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(Message { id, chat, .. }) = &q.message {
+        let mut request = bot.edit_message_text(chat.id, *id, text);
+        if let Some(mode) = parse_mode {
+            request = request.parse_mode(mode);
+        }
+        request.await?;
+    }
+    Ok(())
+}
+
+// Helper function to edit a message with markup from a callback query
+async fn edit_callback_message_with_markup(
+    bot: &Bot,
+    q: &CallbackQuery,
+    text: String,
+    keyboard: InlineKeyboardMarkup,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(Message { id, chat, .. }) = &q.message {
+        bot.edit_message_text(chat.id, *id, text)
+            .reply_markup(keyboard)
+            .await?;
+    }
     Ok(())
 }
 
@@ -212,28 +324,22 @@ async fn show_chain_menu(
         ],
     ];
     
-    // Add IBC and Osmosis-specific options
+    // Add IBC option for mainnets
     if !chain.contains("testnet") {
         buttons.push(vec![InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id")]);
-        
-        if chain == "osmosis" {
-            buttons.push(vec![
-                InlineKeyboardButton::callback("6. LP Incentives", "action:pool_incentives"),
-                InlineKeyboardButton::callback("7. Pool Info", "action:pool_info"),
-            ]);
-            buttons.push(vec![InlineKeyboardButton::callback("8. Price Info", "action:price_info")]);
-        }
     }
     
     buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
     
     let keyboard = InlineKeyboardMarkup::new(buttons);
     
-    if let Some(Message { id, chat, .. }) = q.message {
-        bot.edit_message_text(chat.id, id, format!("Selected: {}\n\nChoose an action:", chain))
-            .reply_markup(keyboard)
-            .await?;
-    }
+    edit_callback_message_with_markup(
+        bot,
+        q,
+        format!("Selected: {}\n\nChoose an action:", chain),
+        keyboard,
+    )
+    .await?;
     
     Ok(())
 }
@@ -245,46 +351,29 @@ pub async fn handle_chain_action(
     q: CallbackQuery,
     chain: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(data) = q.data {
+    if let Some(ref data) = q.data {
         match data.as_str() {
             "action:chain_info" => show_chain_info(&bot, &q, &cache, &chain).await?,
             "action:peer_nodes" => show_peer_nodes(&bot, &q, &cache, &chain).await?,
             "action:endpoints" => show_endpoints(&bot, &q, &cache, &chain).await?,
             "action:explorers" => show_explorers(&bot, &q, &cache, &chain).await?,
             "action:ibc_id" => {
-                dialogue.update(State::AwaitingIbcDenom { chain }).await?;
-                if let Some(Message { chat, .. }) = q.message {
+                let msg_id = q.message.as_ref().map(|m| m.id);
+                dialogue.update(State::AwaitingIbcDenom { chain, message_id: msg_id }).await?;
+                if let Some(Message { chat, .. }) = &q.message {
                     bot.send_message(chat.id, "Enter IBC denom (e.g., ibc/ABC123...):")
                         .await?;
                 }
             }
-            "action:pool_incentives" => {
-                dialogue.update(State::AwaitingPoolId { 
-                    chain, 
-                    action: PoolAction::Incentives 
-                }).await?;
-                if let Some(Message { chat, .. }) = q.message {
-                    bot.send_message(chat.id, "Enter pool ID:").await?;
-                }
-            }
-            "action:pool_info" => {
-                dialogue.update(State::AwaitingPoolId { 
-                    chain, 
-                    action: PoolAction::Info 
-                }).await?;
-                if let Some(Message { chat, .. }) = q.message {
-                    bot.send_message(chat.id, "Enter pool ID:").await?;
-                }
-            }
-            "action:price_info" => {
-                dialogue.update(State::AwaitingTokenTicker { chain }).await?;
-                if let Some(Message { chat, .. }) = q.message {
-                    bot.send_message(chat.id, "Enter token ticker (e.g., OSMO):").await?;
-                }
-            }
             "back:chains" => {
-                dialogue.update(State::SelectingChain { page: 0, is_testnet: false }).await?;
-                update_chain_selection(&bot, &q, 0, false).await?;
+                let msg_id = q.message.as_ref().map(|m| m.id);
+                dialogue.update(State::SelectingChain { 
+                    page: 0, 
+                    is_testnet: false,
+                    message_id: msg_id,
+                    last_selected_chain: Some(chain.clone())
+                }).await?;
+                update_chain_selection(&bot, &q, &cache, 0, false, Some(&chain)).await?;
             }
             _ => {}
         }
@@ -355,16 +444,9 @@ async fn show_chain_info(
             escape_markdown(explorer)
         );
         
-        if let Some(Message { id, chat, .. }) = q.message {
-            bot.edit_message_text(chat.id, id, message)
-                .parse_mode(ParseMode::MarkdownV2)
-                .await?;
-        }
+        edit_callback_message(bot, q, message, Some(ParseMode::MarkdownV2)).await?
     } else {
-        if let Some(Message { chat, .. }) = q.message {
-            bot.send_message(chat.id, format!("Chain {} not found", chain))
-                .await?;
-        }
+        send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
     
     Ok(())
@@ -401,16 +483,9 @@ async fn show_peer_nodes(
             ));
         }
         
-        if let Some(Message { id, chat, .. }) = q.message {
-            bot.edit_message_text(chat.id, id, message)
-                .parse_mode(ParseMode::MarkdownV2)
-                .await?;
-        }
+        edit_callback_message(bot, q, message, Some(ParseMode::MarkdownV2)).await?
     } else {
-        if let Some(Message { chat, .. }) = q.message {
-            bot.send_message(chat.id, format!("Chain {} not found", chain))
-                .await?;
-        }
+        send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
     
     Ok(())
@@ -458,16 +533,9 @@ async fn show_endpoints(
             ));
         }
         
-        if let Some(Message { id, chat, .. }) = q.message {
-            bot.edit_message_text(chat.id, id, message)
-                .parse_mode(ParseMode::MarkdownV2)
-                .await?;
-        }
+        edit_callback_message(bot, q, message, Some(ParseMode::MarkdownV2)).await?
     } else {
-        if let Some(Message { chat, .. }) = q.message {
-            bot.send_message(chat.id, format!("Chain {} not found", chain))
-                .await?;
-        }
+        send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
     
     Ok(())
@@ -492,16 +560,9 @@ async fn show_explorers(
             ));
         }
         
-        if let Some(Message { id, chat, .. }) = q.message {
-            bot.edit_message_text(chat.id, id, message)
-                .parse_mode(ParseMode::MarkdownV2)
-                .await?;
-        }
+        edit_callback_message(bot, q, message, Some(ParseMode::MarkdownV2)).await?
     } else {
-        if let Some(Message { chat, .. }) = q.message {
-            bot.send_message(chat.id, format!("Chain {} not found", chain))
-                .await?;
-        }
+        send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
     
     Ok(())
@@ -512,11 +573,10 @@ pub async fn handle_ibc_denom(
     dialogue: MyDialogue,
     cache: Arc<RegistryCache>,
     msg: Message,
-    chain: String,
+    (chain, _message_id): (String, Option<teloxide::types::MessageId>),
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(text) = msg.text() {
-        if text.starts_with("ibc/") {
-            let ibc_hash = text.strip_prefix("ibc/").unwrap();
+        if let Some(ibc_hash) = text.strip_prefix("ibc/") {
             
             // Get chain info to find REST endpoint
             if let Some(chain_info) = cache.get_chain(&chain).await? {
@@ -548,240 +608,11 @@ pub async fn handle_ibc_denom(
         }
     }
     
-    dialogue.update(State::ChainSelected { chain }).await?;
+    let msg_id = msg.id;
+    dialogue.update(State::ChainSelected { chain, message_id: Some(msg_id) }).await?;
     Ok(())
 }
 
-pub async fn handle_pool_id(
-    bot: Bot,
-    dialogue: MyDialogue,
-    cache: Arc<RegistryCache>,
-    msg: Message,
-    (chain, action): (String, PoolAction),
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(text) = msg.text() {
-        if let Ok(pool_id) = text.parse::<u64>() {
-            match action {
-                PoolAction::Incentives => {
-                    handle_pool_incentives(&bot, &msg, &cache, &chain, pool_id).await?;
-                }
-                PoolAction::Info => {
-                    handle_pool_info(&bot, &msg, &cache, &chain, pool_id).await?;
-                }
-            }
-        } else {
-            bot.send_message(msg.chat.id, "Please enter a valid pool ID number")
-                .await?;
-        }
-    }
-    
-    dialogue.update(State::ChainSelected { chain }).await?;
-    Ok(())
-}
-
-async fn handle_pool_incentives(
-    bot: &Bot,
-    msg: &Message,
-    cache: &Arc<RegistryCache>,
-    chain: &str,
-    pool_id: u64,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(chain_info) = cache.get_chain(chain).await? {
-        if let Some(rest) = find_healthy_rest_endpoint(&chain_info.apis.rest).await {
-            // Check pool type first
-            let pool_type_url = format!("{}/osmosis/gamm/v1beta1/pools/{}", rest.trim_end_matches('/'), pool_id);
-            
-            match reqwest::get(&pool_type_url).await {
-                Ok(response) if response.status().is_success() => {
-                    let json: serde_json::Value = response.json().await?;
-                    let pool_type = json["pool"]["@type"].as_str().unwrap_or("");
-                    
-                    if pool_type.contains("concentratedliquidity") {
-                        // Handle concentrated liquidity pool
-                        let url = format!(
-                            "{}/osmosis/concentratedliquidity/v1beta1/incentive_records?pool_id={}",
-                            rest.trim_end_matches('/'),
-                            pool_id
-                        );
-                        
-                        match reqwest::get(&url).await {
-                            Ok(resp) if resp.status().is_success() => {
-                                let data: serde_json::Value = resp.json().await?;
-                                if let Some(records) = data["incentive_records"].as_array() {
-                                    if !records.is_empty() {
-                                        let mut message = format!("Pool {} Incentives:\n\n", pool_id);
-                                        for record in records.iter().take(5) {
-                                            if let Some(body) = record["incentive_record_body"].as_object() {
-                                                let denom = body["remaining_coin"]["denom"].as_str().unwrap_or("unknown");
-                                                let amount = body["remaining_coin"]["amount"].as_str().unwrap_or("0");
-                                                let rate = body["emission_rate"].as_str().unwrap_or("0");
-                                                message.push_str(&format!("Token: {}\nRemaining: {}\nRate: {}/s\n\n", denom, amount, rate));
-                                            }
-                                        }
-                                        bot.send_message(msg.chat.id, message).await?;
-                                    } else {
-                                        bot.send_message(msg.chat.id, "No incentives found for this pool").await?;
-                                    }
-                                } else {
-                                    bot.send_message(msg.chat.id, "No incentives data available").await?;
-                                }
-                            }
-                            _ => {
-                                bot.send_message(msg.chat.id, "Failed to fetch incentives data").await?;
-                            }
-                        }
-                    } else {
-                        // For GAMM pools, try the external API
-                        let url = format!("http://jasbanza.dedicated.co.za:7000/pool/{}", pool_id);
-                        match reqwest::get(&url).await {
-                            Ok(resp) if resp.status().is_success() => {
-                                let text = resp.text().await?;
-                                // Parse the HTML response to extract JSON
-                                if let Some(start) = text.find("<pre>") {
-                                    if let Some(end) = text.find("</pre>") {
-                                        let json_str = &text[start + 5..end];
-                                        if let Ok(data) = serde_json::from_str::<serde_json::Value>(json_str) {
-                                            if let Some(incentives) = data["data"].as_array() {
-                                                let mut message = format!("Pool {} Incentives:\n\n", pool_id);
-                                                for incentive in incentives.iter().take(3) {
-                                                    if let Some(coins) = incentive["coins"].as_array() {
-                                                        for coin in coins {
-                                                            let denom = coin["denom"].as_str().unwrap_or("unknown");
-                                                            let amount = coin["amount"].as_str().unwrap_or("0");
-                                                            message.push_str(&format!("Token: {}\nAmount: {}\n", denom, amount));
-                                                        }
-                                                    }
-                                                }
-                                                bot.send_message(msg.chat.id, message).await?;
-                                            } else {
-                                                bot.send_message(msg.chat.id, "No incentives found").await?;
-                                            }
-                                        } else {
-                                            bot.send_message(msg.chat.id, "Failed to parse incentives data").await?;
-                                        }
-                                    }
-                                } else {
-                                    bot.send_message(msg.chat.id, "Invalid response format").await?;
-                                }
-                            }
-                            _ => {
-                                bot.send_message(msg.chat.id, "Failed to fetch pool incentives").await?;
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    bot.send_message(msg.chat.id, "Failed to fetch pool information").await?;
-                }
-            }
-        } else {
-            bot.send_message(msg.chat.id, "No healthy REST endpoint found").await?;
-        }
-    } else {
-        bot.send_message(msg.chat.id, "Chain not found").await?;
-    }
-    
-    Ok(())
-}
-
-async fn handle_pool_info(
-    bot: &Bot,
-    msg: &Message,
-    cache: &Arc<RegistryCache>,
-    chain: &str,
-    pool_id: u64,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(chain_info) = cache.get_chain(chain).await? {
-        if let Some(rest) = find_healthy_rest_endpoint(&chain_info.apis.rest).await {
-            let url = format!("{}/osmosis/gamm/v1beta1/pools/{}", rest.trim_end_matches('/'), pool_id);
-            
-            match reqwest::get(&url).await {
-                Ok(response) if response.status().is_success() => {
-                    let json: serde_json::Value = response.json().await?;
-                    let pool = &json["pool"];
-                    let pool_type = pool["@type"].as_str().unwrap_or("");
-                    
-                    let mut message = format!("Pool {} Info:\n\n", pool_id);
-                    
-                    if pool_type.contains("gamm") || pool_type.contains("stableswap") {
-                        message.push_str("Type: GAMM Pool\n");
-                        message.push_str(&format!("ID: {}\n", pool["id"].as_str().unwrap_or("")));
-                        message.push_str(&format!("Address: {}\n", pool["address"].as_str().unwrap_or("")));
-                        
-                        if let Some(params) = pool["pool_params"].as_object() {
-                            message.push_str(&format!("Swap Fee: {}\n", params["swap_fee"].as_str().unwrap_or("")));
-                            message.push_str(&format!("Exit Fee: {}\n", params["exit_fee"].as_str().unwrap_or("")));
-                        }
-                        
-                        if let Some(assets) = pool["pool_assets"].as_array() {
-                            message.push_str("\nAssets:\n");
-                            for asset in assets {
-                                if let Some(token) = asset["token"].as_object() {
-                                    let denom = token["denom"].as_str().unwrap_or("");
-                                    let amount = token["amount"].as_str().unwrap_or("");
-                                    message.push_str(&format!("- {}: {}\n", denom, amount));
-                                }
-                            }
-                        }
-                    } else if pool_type.contains("concentratedliquidity") {
-                        message.push_str("Type: Concentrated Liquidity Pool\n");
-                        message.push_str(&format!("ID: {}\n", pool["id"].as_str().unwrap_or("")));
-                        message.push_str(&format!("Address: {}\n", pool["address"].as_str().unwrap_or("")));
-                        message.push_str(&format!("Spread Factor: {}\n", pool["spread_factor"].as_str().unwrap_or("")));
-                        message.push_str(&format!("Token0: {}\n", pool["token0"].as_str().unwrap_or("")));
-                        message.push_str(&format!("Token1: {}\n", pool["token1"].as_str().unwrap_or("")));
-                    }
-                    
-                    bot.send_message(msg.chat.id, message).await?;
-                }
-                _ => {
-                    bot.send_message(msg.chat.id, "Failed to fetch pool information").await?;
-                }
-            }
-        } else {
-            bot.send_message(msg.chat.id, "No healthy REST endpoint found").await?;
-        }
-    } else {
-        bot.send_message(msg.chat.id, "Chain not found").await?;
-    }
-    
-    Ok(())
-}
-
-pub async fn handle_token_ticker(
-    bot: Bot,
-    dialogue: MyDialogue,
-    cache: Arc<RegistryCache>,
-    msg: Message,
-    chain: String,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(ticker) = msg.text() {
-        let url = format!("https://api.osmosis.zone/tokens/v2/price/{}", ticker.to_uppercase());
-        
-        match reqwest::get(&url).await {
-            Ok(response) if response.status().is_success() => {
-                let json: serde_json::Value = response.json().await?;
-                let price = json["price"].as_f64().unwrap_or(0.0);
-                let change = json["24h_change"].as_f64().unwrap_or(0.0);
-                
-                let message = format!(
-                    "Token: {}\nPrice: ${:.4}\n24h Change: {:.2}%",
-                    ticker.to_uppercase(),
-                    price,
-                    change
-                );
-                
-                bot.send_message(msg.chat.id, message).await?;
-            }
-            _ => {
-                bot.send_message(msg.chat.id, "Failed to fetch price information").await?;
-            }
-        }
-    }
-    
-    dialogue.update(State::ChainSelected { chain }).await?;
-    Ok(())
-}
 
 pub async fn handle_text(
     bot: Bot,
@@ -792,10 +623,169 @@ pub async fn handle_text(
     if let Some(text) = msg.text() {
         let text_lower = text.to_lowercase();
         
+        // Handle numeric menu selection
+        if let Ok(num) = text.parse::<usize>() {
+            let state = dialogue.get().await?.unwrap_or_default();
+            match state {
+                State::ChainSelected { chain, .. } => {
+                    let actions = vec![
+                        "chain_info",
+                        "peer_nodes",
+                        "endpoints",
+                        "explorers",
+                        "ibc_id",
+                    ];
+                    
+                    if num > 0 && num <= actions.len() {
+                        let action = actions[num - 1];
+                        
+                        // Check if IBC-ID is valid for this chain
+                        if action == "ibc_id" && chain.contains("testnet") {
+                            bot.send_message(msg.chat.id, "IBC-ID is not available for testnets.").await?;
+                            return Ok(());
+                        }
+                        
+                        match action {
+                            "chain_info" => {
+                                let chain_data = cache.get_chain(&chain).await?;
+                                let assets_data = cache.get_assets(&chain).await?;
+                                
+                                if let (Some(chain_info), Some(assets)) = (chain_data, assets_data) {
+                                    let base_denom = chain_info
+                                        .staking
+                                        .staking_tokens
+                                        .first()
+                                        .map(|t| t.denom.as_str())
+                                        .unwrap_or("Unknown");
+                                    
+                                    let decimals = assets
+                                        .assets
+                                        .first()
+                                        .and_then(|a| a.denom_units.last())
+                                        .map(|d| d.exponent.to_string())
+                                        .unwrap_or_else(|| "Unknown".to_string());
+                                    
+                                    let rpc = find_healthy_endpoint(&chain_info.apis.rpc, true)
+                                        .await
+                                        .unwrap_or_else(|| "Unknown".to_string());
+                                    
+                                    let rest = find_healthy_rest_endpoint(&chain_info.apis.rest)
+                                        .await
+                                        .unwrap_or_else(|| "Unknown".to_string());
+                                    
+                                    let explorer = chain_info
+                                        .explorers
+                                        .first()
+                                        .map(|e| e.url.as_str())
+                                        .unwrap_or("Unknown");
+                                    
+                                    let message = format!(
+                                        "🔗 *{}*\n\n\
+                                        Chain ID: `{}`\n\
+                                        Chain Name: `{}`\n\
+                                        RPC: `{}`\n\
+                                        REST: `{}`\n\
+                                        Address Prefix: `{}`\n\
+                                        Base Denom: `{}`\n\
+                                        Cointype: `{}`\n\
+                                        Decimals: `{}`\n\
+                                        Block Explorer: `{}`",
+                                        escape_markdown(&chain_info.pretty_name),
+                                        escape_markdown(&chain_info.chain_id),
+                                        escape_markdown(&chain_info.chain_name),
+                                        escape_markdown(&rpc),
+                                        escape_markdown(&rest),
+                                        escape_markdown(&chain_info.bech32_prefix),
+                                        escape_markdown(base_denom),
+                                        chain_info.slip44,
+                                        decimals,
+                                        escape_markdown(explorer)
+                                    );
+                                    
+                                    bot.send_message(msg.chat.id, message)
+                                        .parse_mode(ParseMode::MarkdownV2)
+                                        .await?;
+                                } else {
+                                    bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
+                                }
+                            }
+                            "peer_nodes" | "endpoints" | "explorers" => {
+                                bot.send_message(msg.chat.id, format!("Please use the menu buttons for {} information.", action.replace('_', " "))).await?;
+                            }
+                            "ibc_id" => {
+                                dialogue.update(State::AwaitingIbcDenom { chain, message_id: Some(msg.id) }).await?;
+                                bot.send_message(msg.chat.id, "Enter IBC denom (e.g., ibc/ABC123...):").await?;
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        bot.send_message(msg.chat.id, "Invalid option number. Please try again.").await?;
+                    }
+                }
+                _ => {
+                    bot.send_message(
+                        msg.chat.id,
+                        "No chain selected. Please select a chain first using /start",
+                    )
+                    .await?;
+                }
+            }
+            return Ok(());
+        }
+        
+        // Handle direct IBC denom input
+        if text_lower.starts_with("ibc/") {
+            // Get current state to find the selected chain
+            let state = dialogue.get().await?.unwrap_or_default();
+            match state {
+                State::ChainSelected { chain, .. } | 
+                State::AwaitingIbcDenom { chain, .. } => {
+                    let ibc_hash = &text[4..]; // Remove "ibc/" prefix
+                    
+                    // Get chain info to find REST endpoint
+                    if let Some(chain_info) = cache.get_chain(&chain).await? {
+                        if let Some(rest) = find_healthy_rest_endpoint(&chain_info.apis.rest).await {
+                            match query_ibc_denom(&rest, ibc_hash).await {
+                                Ok((path, base_denom)) => {
+                                    let message = if !path.is_empty() {
+                                        format!("Path: {}\nBase Denomination: {}", path, base_denom)
+                                    } else {
+                                        format!("Base Denomination: {}", base_denom)
+                                    };
+                                    bot.send_message(msg.chat.id, message).await?;
+                                }
+                                Err(_) => {
+                                    bot.send_message(
+                                        msg.chat.id,
+                                        "Failed to fetch IBC denom trace or it does not exist.",
+                                    )
+                                    .await?;
+                                }
+                            }
+                        } else {
+                            bot.send_message(msg.chat.id, "No healthy REST endpoint found for this chain")
+                                .await?;
+                        }
+                    } else {
+                        bot.send_message(msg.chat.id, "Chain not found").await?;
+                    }
+                }
+                _ => {
+                    bot.send_message(
+                        msg.chat.id,
+                        "No chain selected. Please select a chain first using /start",
+                    )
+                    .await?;
+                }
+            }
+            return Ok(());
+        }
+        
         // Check if it's a chain name
         let chains = cache.list_chains().await?;
         if chains.iter().any(|c| c.to_lowercase() == text_lower) {
-            dialogue.update(State::ChainSelected { chain: text_lower.clone() }).await?;
+            let msg_id = msg.id;
+            dialogue.update(State::ChainSelected { chain: text_lower.clone(), message_id: Some(msg_id) }).await?;
             
             // Show chain menu inline
             let mut buttons = vec![
@@ -811,15 +801,9 @@ pub async fn handle_text(
             
             if !text_lower.contains("testnet") {
                 buttons.push(vec![InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id")]);
-                
-                if text_lower == "osmosis" {
-                    buttons.push(vec![
-                        InlineKeyboardButton::callback("6. LP Incentives", "action:pool_incentives"),
-                        InlineKeyboardButton::callback("7. Pool Info", "action:pool_info"),
-                    ]);
-                    buttons.push(vec![InlineKeyboardButton::callback("8. Price Info", "action:price_info")]);
-                }
             }
+            
+            buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
             
             let keyboard = InlineKeyboardMarkup::new(buttons);
             

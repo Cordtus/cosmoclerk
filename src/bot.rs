@@ -14,26 +14,17 @@ pub enum State {
     SelectingChain {
         page: usize,
         is_testnet: bool,
+        message_id: Option<teloxide::types::MessageId>,
+        last_selected_chain: Option<String>,
     },
     ChainSelected {
         chain: String,
+        message_id: Option<teloxide::types::MessageId>,
     },
     AwaitingIbcDenom {
         chain: String,
+        message_id: Option<teloxide::types::MessageId>,
     },
-    AwaitingPoolId {
-        chain: String,
-        action: PoolAction,
-    },
-    AwaitingTokenTicker {
-        chain: String,
-    },
-}
-
-#[derive(Clone)]
-pub enum PoolAction {
-    Incentives,
-    Info,
 }
 
 pub async fn run(bot: Bot) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -55,22 +46,20 @@ fn schema() -> UpdateHandler<Box<dyn std::error::Error + Send + Sync + 'static>>
     let command_handler = teloxide::filter_command::<commands::Command, _>()
         .branch(case![commands::Command::Start].endpoint(handlers::start))
         .branch(case![commands::Command::Restart].endpoint(handlers::restart))
-        .branch(case![commands::Command::Help].endpoint(handlers::help));
+        .branch(case![commands::Command::Help].endpoint(handlers::help))
+        .branch(case![commands::Command::Testnet].endpoint(handlers::show_testnets))
+        .branch(case![commands::Command::Testnets].endpoint(handlers::show_testnets))
+        .branch(case![commands::Command::Mainnet].endpoint(handlers::show_mainnets))
+        .branch(case![commands::Command::Mainnets].endpoint(handlers::show_mainnets));
 
     let message_handler = Update::filter_message()
         .branch(command_handler)
-        .branch(case![State::AwaitingIbcDenom { chain }].endpoint(handlers::handle_ibc_denom))
-        .branch(
-            case![State::AwaitingPoolId { chain, action }].endpoint(handlers::handle_pool_id),
-        )
-        .branch(
-            case![State::AwaitingTokenTicker { chain }].endpoint(handlers::handle_token_ticker),
-        )
+        .branch(case![State::AwaitingIbcDenom { chain, message_id }].endpoint(handlers::handle_ibc_denom))
         .branch(dptree::endpoint(handlers::handle_text));
 
     let callback_handler = Update::filter_callback_query()
-        .branch(case![State::SelectingChain { page, is_testnet }].endpoint(handlers::handle_chain_selection))
-        .branch(case![State::ChainSelected { chain }].endpoint(handlers::handle_chain_action))
+        .branch(case![State::SelectingChain { page, is_testnet, message_id, last_selected_chain }].endpoint(handlers::handle_chain_selection))
+        .branch(case![State::ChainSelected { chain, message_id }].endpoint(handlers::handle_chain_action))
         .branch(dptree::endpoint(handlers::handle_callback));
 
     dialogue::enter::<Update, InMemStorage<State>, State, _>()

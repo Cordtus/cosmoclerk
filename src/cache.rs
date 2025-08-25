@@ -1,4 +1,4 @@
-use chain_registry::get::{AssetList, ChainInfo, IBCPath};
+use chain_registry::get::{AssetList, ChainInfo};
 use dashmap::DashMap;
 use std::time::{Duration, Instant};
 
@@ -10,7 +10,6 @@ pub struct CachedItem<T> {
 pub struct RegistryCache {
     chains: DashMap<String, CachedItem<ChainInfo>>,
     assets: DashMap<String, CachedItem<AssetList>>,
-    paths: DashMap<String, CachedItem<IBCPath>>,
     ttl: Duration,
 }
 
@@ -19,7 +18,6 @@ impl RegistryCache {
         Self {
             chains: DashMap::new(),
             assets: DashMap::new(),
-            paths: DashMap::new(),
             ttl: Duration::from_secs(ttl_minutes * 60),
         }
     }
@@ -37,7 +35,9 @@ impl RegistryCache {
         }
 
         // Fetch from registry
-        let chain = chain_registry::get::get_chain(name).await?;
+        let chain = chain_registry::get::get_chain(name)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         if let Some(ref c) = chain {
             self.chains.insert(
                 name.to_string(),
@@ -62,7 +62,9 @@ impl RegistryCache {
         }
 
         // Fetch from registry
-        let assets = chain_registry::get::get_assets(name).await?;
+        let assets = chain_registry::get::get_assets(name)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         if let Some(ref a) = assets {
             self.assets.insert(
                 name.to_string(),
@@ -75,42 +77,10 @@ impl RegistryCache {
         Ok(assets)
     }
 
-    pub async fn get_path(
-        &self,
-        chain_a: &str,
-        chain_b: &str,
-    ) -> anyhow::Result<Option<IBCPath>> {
-        let key = format!("{}-{}", chain_a.min(chain_b), chain_a.max(chain_b));
-
-        // Check cache first
-        if let Some(cached) = self.paths.get(&key) {
-            if cached.timestamp.elapsed() < self.ttl {
-                return Ok(Some(cached.data.clone()));
-            } else {
-                drop(cached);
-                self.paths.remove(&key);
-            }
-        }
-
-        // Fetch from registry
-        let path = chain_registry::get::get_path(chain_a, chain_b).await?;
-        if let Some(ref p) = path {
-            self.paths.insert(
-                key,
-                CachedItem {
-                    data: p.clone(),
-                    timestamp: Instant::now(),
-                },
-            );
-        }
-        Ok(path)
-    }
 
     pub async fn list_chains(&self) -> anyhow::Result<Vec<String>> {
-        chain_registry::get::list_chains().await.map_err(Into::into)
-    }
-
-    pub async fn list_paths(&self) -> anyhow::Result<Vec<String>> {
-        chain_registry::get::list_paths().await.map_err(Into::into)
+        chain_registry::get::list_chains()
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
     }
 }
