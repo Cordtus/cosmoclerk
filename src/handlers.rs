@@ -6,7 +6,7 @@ use crate::{
 use std::sync::Arc;
 use teloxide::{
     prelude::*,
-    types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode},
+    types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, MessageId},
 };
 
 pub async fn start(
@@ -316,14 +316,35 @@ async fn show_chain_menu(
     
     let keyboard = InlineKeyboardMarkup::new(buttons);
     
-    edit_callback_message_with_markup(
-        bot,
-        q,
-        format!("Selected: {}\n\nChoose an action:", chain),
-        keyboard,
-    )
-    .await?;
+    // Send as a new message instead of editing
+    if let Some(Message { chat, .. }) = &q.message {
+        bot.send_message(chat.id, format!("Selected: {}\n\nChoose an action:", chain))
+            .reply_markup(keyboard)
+            .await?;
+    }
     
+    Ok(())
+}
+
+// Helper function to delete a message with a transition effect
+async fn delete_message_with_effect(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // First update the message with a vaporizing effect
+    let effects = vec![
+        "💨 ᵈⁱˢˢᵒˡᵛⁱⁿᵍ...",
+        "✨ ...",
+    ];
+    
+    for effect in effects {
+        bot.edit_message_text(chat_id, message_id, effect).await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
+    
+    // Then delete the message
+    bot.delete_message(chat_id, message_id).await?;
     Ok(())
 }
 
@@ -374,29 +395,51 @@ pub async fn handle_chain_action(
     if let Some(ref data) = q.data {
         match data.as_str() {
             "action:chain_info" => {
+                // Delete the menu with effect
+                if let Some(Message { id, chat, .. }) = &q.message {
+                    delete_message_with_effect(&bot, chat.id, *id).await?;
+                }
+                // Send info as new message
                 show_chain_info(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
                 show_chain_menu(&bot, &q, &chain).await?;
             }
             "action:peer_nodes" => {
+                // Delete the menu with effect
+                if let Some(Message { id, chat, .. }) = &q.message {
+                    delete_message_with_effect(&bot, chat.id, *id).await?;
+                }
+                // Send info as new message
                 show_peer_nodes(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
                 show_chain_menu(&bot, &q, &chain).await?;
             }
             "action:endpoints" => {
+                // Delete the menu with effect
+                if let Some(Message { id, chat, .. }) = &q.message {
+                    delete_message_with_effect(&bot, chat.id, *id).await?;
+                }
+                // Send info as new message
                 show_endpoints(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
                 show_chain_menu(&bot, &q, &chain).await?;
             }
             "action:explorers" => {
+                // Delete the menu with effect
+                if let Some(Message { id, chat, .. }) = &q.message {
+                    delete_message_with_effect(&bot, chat.id, *id).await?;
+                }
+                // Send info as new message
                 show_explorers(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
                 show_chain_menu(&bot, &q, &chain).await?;
             }
             "action:ibc_id" => {
-                let msg_id = q.message.as_ref().map(|m| m.id);
-                dialogue.update(State::AwaitingIbcDenom { chain, message_id: msg_id }).await?;
-                if let Some(Message { chat, .. }) = &q.message {
+                // Delete the menu with effect
+                if let Some(Message { id, chat, .. }) = &q.message {
+                    delete_message_with_effect(&bot, chat.id, *id).await?;
+                    let msg_id = q.message.as_ref().map(|m| m.id);
+                    dialogue.update(State::AwaitingIbcDenom { chain, message_id: msg_id }).await?;
                     bot.send_message(chat.id, "Enter IBC denom (e.g., ibc/ABC123...):")
                         .await?;
                 }
@@ -480,9 +523,9 @@ async fn show_chain_info(
             escape_markdown(explorer)
         );
         
-        // Edit message to show info
-        if let Some(Message { id, chat, .. }) = &q.message {
-            bot.edit_message_text(chat.id, *id, message)
+        // Send as new message instead of editing
+        if let Some(Message { chat, .. }) = &q.message {
+            bot.send_message(chat.id, message)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
         }
@@ -524,9 +567,9 @@ async fn show_peer_nodes(
             ));
         }
         
-        // Edit message to show info
-        if let Some(Message { id, chat, .. }) = &q.message {
-            bot.edit_message_text(chat.id, *id, message)
+        // Send as new message instead of editing
+        if let Some(Message { chat, .. }) = &q.message {
+            bot.send_message(chat.id, message)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
         }
@@ -579,9 +622,9 @@ async fn show_endpoints(
             ));
         }
         
-        // Edit message to show info
-        if let Some(Message { id, chat, .. }) = &q.message {
-            bot.edit_message_text(chat.id, *id, message)
+        // Send as new message instead of editing
+        if let Some(Message { chat, .. }) = &q.message {
+            bot.send_message(chat.id, message)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
         }
@@ -611,9 +654,9 @@ async fn show_explorers(
             ));
         }
         
-        // Edit message to show info
-        if let Some(Message { id, chat, .. }) = &q.message {
-            bot.edit_message_text(chat.id, *id, message)
+        // Send as new message instead of editing
+        if let Some(Message { chat, .. }) = &q.message {
+            bot.send_message(chat.id, message)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
         }
