@@ -276,23 +276,6 @@ async fn send_callback_message(
     Ok(())
 }
 
-// Helper function to edit a message from a callback query
-async fn edit_callback_message(
-    bot: &Bot,
-    q: &CallbackQuery,
-    text: String,
-    parse_mode: Option<ParseMode>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    if let Some(Message { id, chat, .. }) = &q.message {
-        let mut request = bot.edit_message_text(chat.id, *id, text);
-        if let Some(mode) = parse_mode {
-            request = request.parse_mode(mode);
-        }
-        request.await?;
-    }
-    Ok(())
-}
-
 // Helper function to edit a message with markup from a callback query
 async fn edit_callback_message_with_markup(
     bot: &Bot,
@@ -344,6 +327,43 @@ async fn show_chain_menu(
     Ok(())
 }
 
+// Helper function to send chain menu as a new message
+async fn send_chain_menu(
+    bot: &Bot,
+    msg: &Message,
+    chain: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut buttons = vec![
+        vec![
+            InlineKeyboardButton::callback("1. Chain Info", "action:chain_info"),
+            InlineKeyboardButton::callback("2. Peer Nodes", "action:peer_nodes"),
+        ],
+        vec![
+            InlineKeyboardButton::callback("3. Endpoints", "action:endpoints"),
+            InlineKeyboardButton::callback("4. Block Explorers", "action:explorers"),
+        ],
+    ];
+    
+    // Add IBC option for mainnets
+    if !chain.contains("testnet") {
+        buttons.push(vec![InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id")]);
+    }
+    
+    buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
+    
+    let keyboard = InlineKeyboardMarkup::new(buttons);
+    
+    bot.send_message(
+        msg.chat.id,
+        format!("Selected: {}\n\nChoose an action:", chain),
+    )
+    .reply_markup(keyboard)
+    .await?;
+    
+    Ok(())
+}
+
+
 pub async fn handle_chain_action(
     bot: Bot,
     dialogue: MyDialogue,
@@ -353,10 +373,26 @@ pub async fn handle_chain_action(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(ref data) = q.data {
         match data.as_str() {
-            "action:chain_info" => show_chain_info(&bot, &q, &cache, &chain).await?,
-            "action:peer_nodes" => show_peer_nodes(&bot, &q, &cache, &chain).await?,
-            "action:endpoints" => show_endpoints(&bot, &q, &cache, &chain).await?,
-            "action:explorers" => show_explorers(&bot, &q, &cache, &chain).await?,
+            "action:chain_info" => {
+                show_chain_info(&bot, &q, &cache, &chain).await?;
+                // Show menu again after displaying info
+                show_chain_menu(&bot, &q, &chain).await?;
+            }
+            "action:peer_nodes" => {
+                show_peer_nodes(&bot, &q, &cache, &chain).await?;
+                // Show menu again after displaying info
+                show_chain_menu(&bot, &q, &chain).await?;
+            }
+            "action:endpoints" => {
+                show_endpoints(&bot, &q, &cache, &chain).await?;
+                // Show menu again after displaying info
+                show_chain_menu(&bot, &q, &chain).await?;
+            }
+            "action:explorers" => {
+                show_explorers(&bot, &q, &cache, &chain).await?;
+                // Show menu again after displaying info
+                show_chain_menu(&bot, &q, &chain).await?;
+            }
             "action:ibc_id" => {
                 let msg_id = q.message.as_ref().map(|m| m.id);
                 dialogue.update(State::AwaitingIbcDenom { chain, message_id: msg_id }).await?;
@@ -444,7 +480,12 @@ async fn show_chain_info(
             escape_markdown(explorer)
         );
         
-        edit_callback_message(bot, q, message, Some(ParseMode::MarkdownV2)).await?
+        // Edit message to show info
+        if let Some(Message { id, chat, .. }) = &q.message {
+            bot.edit_message_text(chat.id, *id, message)
+                .parse_mode(ParseMode::MarkdownV2)
+                .await?;
+        }
     } else {
         send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
@@ -483,7 +524,12 @@ async fn show_peer_nodes(
             ));
         }
         
-        edit_callback_message(bot, q, message, Some(ParseMode::MarkdownV2)).await?
+        // Edit message to show info
+        if let Some(Message { id, chat, .. }) = &q.message {
+            bot.edit_message_text(chat.id, *id, message)
+                .parse_mode(ParseMode::MarkdownV2)
+                .await?;
+        }
     } else {
         send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
@@ -533,7 +579,12 @@ async fn show_endpoints(
             ));
         }
         
-        edit_callback_message(bot, q, message, Some(ParseMode::MarkdownV2)).await?
+        // Edit message to show info
+        if let Some(Message { id, chat, .. }) = &q.message {
+            bot.edit_message_text(chat.id, *id, message)
+                .parse_mode(ParseMode::MarkdownV2)
+                .await?;
+        }
     } else {
         send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
@@ -560,7 +611,12 @@ async fn show_explorers(
             ));
         }
         
-        edit_callback_message(bot, q, message, Some(ParseMode::MarkdownV2)).await?
+        // Edit message to show info
+        if let Some(Message { id, chat, .. }) = &q.message {
+            bot.edit_message_text(chat.id, *id, message)
+                .parse_mode(ParseMode::MarkdownV2)
+                .await?;
+        }
     } else {
         send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
@@ -591,21 +647,21 @@ pub async fn handle_ibc_denom(
                             bot.send_message(msg.chat.id, message).await?;
                         }
                         Err(_) => {
-                            bot.send_message(msg.chat.id, "Failed to fetch IBC denom trace")
-                                .await?;
+                            bot.send_message(msg.chat.id, "Failed to fetch IBC denom trace").await?;
                         }
                     }
                 } else {
-                    bot.send_message(msg.chat.id, "No healthy REST endpoint found for this chain")
-                        .await?;
+                    bot.send_message(msg.chat.id, "No healthy REST endpoint found for this chain").await?;
                 }
             } else {
                 bot.send_message(msg.chat.id, "Chain not found").await?;
             }
         } else {
-            bot.send_message(msg.chat.id, "Please enter a valid IBC denom (e.g., ibc/ABC123...)")
-                .await?;
+            bot.send_message(msg.chat.id, "Please enter a valid IBC denom (e.g., ibc/ABC123...)").await?;
         }
+        
+        // Show the menu after showing IBC info
+        send_chain_menu(&bot, &msg, &chain).await?;
     }
     
     let msg_id = msg.id;
@@ -708,6 +764,8 @@ pub async fn handle_text(
                                 } else {
                                     bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
                                 }
+                                // Show menu again
+                                send_chain_menu(&bot, &msg, &chain).await?;
                             }
                             "peer_nodes" => {
                                 // Show peer nodes directly
@@ -742,6 +800,8 @@ pub async fn handle_text(
                                 } else {
                                     bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
                                 }
+                                // Show menu again
+                                send_chain_menu(&bot, &msg, &chain).await?;
                             }
                             "endpoints" => {
                                 // Show endpoints directly
@@ -787,6 +847,8 @@ pub async fn handle_text(
                                 } else {
                                     bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
                                 }
+                                // Show menu again
+                                send_chain_menu(&bot, &msg, &chain).await?;
                             }
                             "explorers" => {
                                 // Show explorers directly
@@ -809,6 +871,8 @@ pub async fn handle_text(
                                 } else {
                                     bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
                                 }
+                                // Show menu again
+                                send_chain_menu(&bot, &msg, &chain).await?;
                             }
                             "ibc_id" => {
                                 dialogue.update(State::AwaitingIbcDenom { chain, message_id: Some(msg.id) }).await?;
@@ -867,6 +931,8 @@ pub async fn handle_text(
                     } else {
                         bot.send_message(msg.chat.id, "Chain not found").await?;
                     }
+                    // Show menu again after IBC lookup
+                    send_chain_menu(&bot, &msg, &chain).await?;
                 }
                 _ => {
                     bot.send_message(
