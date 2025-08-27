@@ -162,12 +162,17 @@ pub async fn handle_chain_selection(
     if let Some(ref data) = q.data {
         if let Some(chain) = data.strip_prefix("select:") {
             let chain = chain.to_string();
-            let msg_id = q.message.as_ref().map(|m| m.id);
+            // Delete the current chain selection menu
+            if let Some(Message { id, chat, .. }) = &q.message {
+                if let Err(e) = bot.delete_message(chat.id, *id).await {
+                    eprintln!("Failed to delete chain selection menu: {}", e);
+                }
+            }
+            let new_menu_id = show_chain_menu(&bot, &q, &chain).await?;
             dialogue.update(State::ChainSelected { 
                 chain: chain.clone(), 
-                message_id: msg_id 
+                message_id: Some(new_menu_id) 
             }).await?;
-            show_chain_menu(&bot, &q, &chain).await?;
         } else if let Some(page_str) = data.strip_prefix("page:") {
             let new_page: usize = page_str.parse()?;
             let msg_id = q.message.as_ref().map(|m| m.id);
@@ -295,7 +300,7 @@ async fn show_chain_menu(
     bot: &Bot,
     q: &CallbackQuery,
     chain: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<MessageId, Box<dyn std::error::Error + Send + Sync>> {
     let mut buttons = vec![
         vec![
             InlineKeyboardButton::callback("1. Chain Info", "action:chain_info"),
@@ -318,12 +323,13 @@ async fn show_chain_menu(
     
     // Send as a new message instead of editing
     if let Some(Message { chat, .. }) = &q.message {
-        bot.send_message(chat.id, format!("Selected: {}\n\nChoose an action:", chain))
+        let sent_msg = bot.send_message(chat.id, format!("Selected: {}\n\nChoose an action:", chain))
             .reply_markup(keyboard)
             .await?;
+        return Ok(sent_msg.id);
     }
     
-    Ok(())
+    Err("No message in callback query".into())
 }
 
 // Helper function to delete a message with a transition effect
@@ -353,7 +359,7 @@ async fn send_chain_menu(
     bot: &Bot,
     msg: &Message,
     chain: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<MessageId, Box<dyn std::error::Error + Send + Sync>> {
     let mut buttons = vec![
         vec![
             InlineKeyboardButton::callback("1. Chain Info", "action:chain_info"),
@@ -374,14 +380,14 @@ async fn send_chain_menu(
     
     let keyboard = InlineKeyboardMarkup::new(buttons);
     
-    bot.send_message(
+    let sent_msg = bot.send_message(
         msg.chat.id,
         format!("Selected: {}\n\nChoose an action:", chain),
     )
     .reply_markup(keyboard)
     .await?;
     
-    Ok(())
+    Ok(sent_msg.id)
 }
 
 
@@ -402,7 +408,11 @@ pub async fn handle_chain_action(
                 // Send info as new message
                 show_chain_info(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
-                show_chain_menu(&bot, &q, &chain).await?;
+                let new_menu_id = show_chain_menu(&bot, &q, &chain).await?;
+                dialogue.update(State::ChainSelected { 
+                    chain: chain.clone(), 
+                    message_id: Some(new_menu_id) 
+                }).await?;
             }
             "action:peer_nodes" => {
                 // Delete the menu with effect
@@ -412,7 +422,11 @@ pub async fn handle_chain_action(
                 // Send info as new message
                 show_peer_nodes(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
-                show_chain_menu(&bot, &q, &chain).await?;
+                let new_menu_id = show_chain_menu(&bot, &q, &chain).await?;
+                dialogue.update(State::ChainSelected { 
+                    chain: chain.clone(), 
+                    message_id: Some(new_menu_id) 
+                }).await?;
             }
             "action:endpoints" => {
                 // Delete the menu with effect
@@ -422,7 +436,11 @@ pub async fn handle_chain_action(
                 // Send info as new message
                 show_endpoints(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
-                show_chain_menu(&bot, &q, &chain).await?;
+                let new_menu_id = show_chain_menu(&bot, &q, &chain).await?;
+                dialogue.update(State::ChainSelected { 
+                    chain: chain.clone(), 
+                    message_id: Some(new_menu_id) 
+                }).await?;
             }
             "action:explorers" => {
                 // Delete the menu with effect
@@ -432,7 +450,11 @@ pub async fn handle_chain_action(
                 // Send info as new message
                 show_explorers(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
-                show_chain_menu(&bot, &q, &chain).await?;
+                let new_menu_id = show_chain_menu(&bot, &q, &chain).await?;
+                dialogue.update(State::ChainSelected { 
+                    chain: chain.clone(), 
+                    message_id: Some(new_menu_id) 
+                }).await?;
             }
             "action:ibc_id" => {
                 // Delete the menu with effect
@@ -445,6 +467,7 @@ pub async fn handle_chain_action(
                 }
             }
             "back:chains" => {
+                // No need to delete - update_chain_selection will edit the existing message
                 let msg_id = q.message.as_ref().map(|m| m.id);
                 dialogue.update(State::SelectingChain { 
                     page: 0, 
@@ -704,11 +727,17 @@ pub async fn handle_ibc_denom(
         }
         
         // Show the menu after showing IBC info
-        send_chain_menu(&bot, &msg, &chain).await?;
+        let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+        dialogue.update(State::ChainSelected { 
+            chain: chain.clone(), 
+            message_id: Some(new_menu_id) 
+        }).await?;
+    } else {
+        dialogue.update(State::ChainSelected { 
+            chain, 
+            message_id: None 
+        }).await?;
     }
-    
-    let msg_id = msg.id;
-    dialogue.update(State::ChainSelected { chain, message_id: Some(msg_id) }).await?;
     Ok(())
 }
 
@@ -726,7 +755,7 @@ pub async fn handle_text(
         if let Ok(num) = text.parse::<usize>() {
             let state = dialogue.get().await?.unwrap_or_default();
             match state {
-                State::ChainSelected { chain, .. } => {
+                State::ChainSelected { chain, message_id } => {
                     let actions = vec![
                         "chain_info",
                         "peer_nodes",
@@ -742,6 +771,14 @@ pub async fn handle_text(
                         if action == "ibc_id" && chain.contains("testnet") {
                             bot.send_message(msg.chat.id, "IBC-ID is not available for testnets.").await?;
                             return Ok(());
+                        }
+                        
+                        // Delete the previous menu if it exists
+                        if let Some(menu_id) = message_id {
+                            if let Err(e) = bot.delete_message(msg.chat.id, menu_id).await {
+                                // Log error but continue - menu might already be deleted
+                                eprintln!("Failed to delete menu: {}", e);
+                            }
                         }
                         
                         match action {
@@ -808,7 +845,11 @@ pub async fn handle_text(
                                     bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
                                 }
                                 // Show menu again
-                                send_chain_menu(&bot, &msg, &chain).await?;
+                                let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+                                dialogue.update(State::ChainSelected { 
+                                    chain: chain.clone(), 
+                                    message_id: Some(new_menu_id) 
+                                }).await?;
                             }
                             "peer_nodes" => {
                                 // Show peer nodes directly
@@ -844,7 +885,11 @@ pub async fn handle_text(
                                     bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
                                 }
                                 // Show menu again
-                                send_chain_menu(&bot, &msg, &chain).await?;
+                                let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+                                dialogue.update(State::ChainSelected { 
+                                    chain: chain.clone(), 
+                                    message_id: Some(new_menu_id) 
+                                }).await?;
                             }
                             "endpoints" => {
                                 // Show endpoints directly
@@ -891,7 +936,11 @@ pub async fn handle_text(
                                     bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
                                 }
                                 // Show menu again
-                                send_chain_menu(&bot, &msg, &chain).await?;
+                                let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+                                dialogue.update(State::ChainSelected { 
+                                    chain: chain.clone(), 
+                                    message_id: Some(new_menu_id) 
+                                }).await?;
                             }
                             "explorers" => {
                                 // Show explorers directly
@@ -915,7 +964,11 @@ pub async fn handle_text(
                                     bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
                                 }
                                 // Show menu again
-                                send_chain_menu(&bot, &msg, &chain).await?;
+                                let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+                                dialogue.update(State::ChainSelected { 
+                                    chain: chain.clone(), 
+                                    message_id: Some(new_menu_id) 
+                                }).await?;
                             }
                             "ibc_id" => {
                                 dialogue.update(State::AwaitingIbcDenom { chain, message_id: Some(msg.id) }).await?;
@@ -975,7 +1028,11 @@ pub async fn handle_text(
                         bot.send_message(msg.chat.id, "Chain not found").await?;
                     }
                     // Show menu again after IBC lookup
-                    send_chain_menu(&bot, &msg, &chain).await?;
+                    let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+                    dialogue.update(State::ChainSelected { 
+                        chain: chain.clone(), 
+                        message_id: Some(new_menu_id) 
+                    }).await?;
                 }
                 _ => {
                     bot.send_message(
@@ -991,8 +1048,15 @@ pub async fn handle_text(
         // Check if it's a chain name
         let chains = cache.list_chains().await?;
         if chains.iter().any(|c| c.to_lowercase() == text_lower) {
-            let msg_id = msg.id;
-            dialogue.update(State::ChainSelected { chain: text_lower.clone(), message_id: Some(msg_id) }).await?;
+            // Delete any previous menu if in chain selected state
+            let state = dialogue.get().await?.unwrap_or_default();
+            if let State::ChainSelected { message_id, .. } = state {
+                if let Some(menu_id) = message_id {
+                    if let Err(e) = bot.delete_message(msg.chat.id, menu_id).await {
+                        eprintln!("Failed to delete previous menu: {}", e);
+                    }
+                }
+            }
             
             // Show chain menu inline
             let mut buttons = vec![
@@ -1017,9 +1081,12 @@ pub async fn handle_text(
             
             let keyboard = InlineKeyboardMarkup::new(buttons);
             
-            bot.send_message(msg.chat.id, format!("Selected: {}\n\nChoose an action:", text_lower))
+            let sent_msg = bot.send_message(msg.chat.id, format!("Selected: {}\n\nChoose an action:", text_lower))
                 .reply_markup(keyboard)
                 .await?;
+            
+            // Update dialogue with the new menu's message ID
+            dialogue.update(State::ChainSelected { chain: text_lower.clone(), message_id: Some(sent_msg.id) }).await?;
         } else {
             bot.send_message(
                 msg.chat.id,
