@@ -129,14 +129,27 @@ pub async fn query_ibc_denom(
 
         // Parse the alternate response format which has denom directly
         if let Some(denom) = json["denom"].as_object() {
-            let path = denom.get("path")
+            // The alternate format has "base" instead of "base_denom"
+            // and "trace" array instead of "path"
+            let base_denom = denom.get("base")
                 .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let base_denom = denom.get("base_denom")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing base_denom in response"))?;
+                .ok_or_else(|| anyhow::anyhow!("Missing base in alternate response"))?;
 
-            return Ok((path.to_string(), base_denom.to_string()));
+            // Reconstruct path from trace array
+            let path = if let Some(trace) = denom.get("trace").and_then(|v| v.as_array()) {
+                trace.iter()
+                    .filter_map(|entry| {
+                        let port = entry["port_id"].as_str()?;
+                        let channel = entry["channel_id"].as_str()?;
+                        Some(format!("{}/{}", port, channel))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("/")
+            } else {
+                String::new()
+            };
+
+            return Ok((path, base_denom.to_string()));
         }
 
         return Err(anyhow::anyhow!("Invalid response format from alternate endpoint"));
