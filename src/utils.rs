@@ -90,6 +90,7 @@ pub async fn query_ibc_denom(
     rest_endpoint: &str,
     ibc_hash: &str,
 ) -> anyhow::Result<(String, String)> {
+    // First try the standard endpoint
     let url = format!(
         "{}/ibc/apps/transfer/v1/denom_traces/{}",
         rest_endpoint.trim_end_matches('/'),
@@ -106,10 +107,39 @@ pub async fn query_ibc_denom(
 
     // Check if the request was successful
     if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "IBC denom trace query failed with status: {}. The denom might not exist on this chain.",
-            response.status()
-        ));
+        // Try the alternate endpoint /denoms/{hash} for chains that use it
+        let alt_url = format!(
+            "{}/ibc/apps/transfer/v1/denoms/{}",
+            rest_endpoint.trim_end_matches('/'),
+            ibc_hash
+        );
+
+        log::info!("Trying alternate endpoint: {}", alt_url);
+
+        let alt_response = client.get(&alt_url).send().await?;
+
+        if !alt_response.status().is_success() {
+            return Err(anyhow::anyhow!(
+                "IBC denom query failed. The denom might not exist on this chain or the API might be unavailable."
+            ));
+        }
+
+        let json: Value = alt_response.json().await?;
+        log::debug!("IBC denom response (alternate): {}", json);
+
+        // Parse the alternate response format which has denom directly
+        if let Some(denom) = json["denom"].as_object() {
+            let path = denom.get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let base_denom = denom.get("base_denom")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing base_denom in response"))?;
+
+            return Ok((path.to_string(), base_denom.to_string()));
+        }
+
+        return Err(anyhow::anyhow!("Invalid response format from alternate endpoint"));
     }
 
     let json: Value = response.json().await?;

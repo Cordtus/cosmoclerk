@@ -780,8 +780,7 @@ pub async fn handle_ibc_channel(
     dialogue: MyDialogue,
     cache: Arc<RegistryCache>,
     msg: Message,
-    chain: String,
-    _message_id: Option<MessageId>,
+    (chain, _message_id): (String, Option<MessageId>),
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(text) = msg.text() {
         // Parse the input - could be "23", "channel-23", or "channel-23 transfer"
