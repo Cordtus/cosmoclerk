@@ -1,7 +1,9 @@
 use crate::{
     bot::{MyDialogue, State},
     cache::RegistryCache,
-    utils::{escape_markdown, find_healthy_endpoint, find_healthy_rest_endpoint, query_ibc_denom, PAGE_SIZE},
+    utils::{escape_markdown, find_healthy_endpoint, find_healthy_rest_endpoint,
+            query_ibc_denom, query_ibc_denom_with_fallback, query_ibc_channel_info_with_fallback,
+            extract_channel_from_path, format_channel_input, PAGE_SIZE},
 };
 use std::sync::Arc;
 use teloxide::{
@@ -370,14 +372,17 @@ async fn send_chain_menu(
             InlineKeyboardButton::callback("4. Block Explorers", "action:explorers"),
         ],
     ];
-    
-    // Add IBC option for mainnets
+
+    // Add IBC options for mainnets
     if !chain.contains("testnet") {
-        buttons.push(vec![InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id")]);
+        buttons.push(vec![
+            InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
+            InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
+        ]);
     }
-    
+
     buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
-    
+
     let keyboard = InlineKeyboardMarkup::new(buttons);
     
     let sent_msg = bot.send_message(
@@ -463,6 +468,16 @@ pub async fn handle_chain_action(
                     let msg_id = q.message.as_ref().map(|m| m.id);
                     dialogue.update(State::AwaitingIbcDenom { chain, message_id: msg_id }).await?;
                     bot.send_message(chat.id, "Enter IBC denom (e.g., ibc/ABC123...):")
+                        .await?;
+                }
+            }
+            "action:ibc_route" => {
+                // Delete the menu with effect
+                if let Some(Message { id, chat, .. }) = &q.message {
+                    delete_message_with_effect(&bot, chat.id, *id).await?;
+                    let msg_id = q.message.as_ref().map(|m| m.id);
+                    dialogue.update(State::AwaitingIbcChannel { chain, message_id: msg_id }).await?;
+                    bot.send_message(chat.id, "Enter IBC channel (e.g., 0 or channel-0):\nOptionally add port (e.g., channel-0 transfer):")
                         .await?;
                 }
             }
@@ -702,22 +717,41 @@ pub async fn handle_ibc_denom(
             
             // Get chain info to find REST endpoint
             if let Some(chain_info) = cache.get_chain(&chain).await? {
-                if let Some(rest) = find_healthy_rest_endpoint(&chain_info.apis.rest).await {
-                    match query_ibc_denom(&rest, ibc_hash).await {
-                        Ok((path, base_denom)) => {
-                            let message = if !path.is_empty() {
-                                format!("Path: {}\nBase Denomination: {}", path, base_denom)
-                            } else {
-                                format!("Base Denomination: {}", base_denom)
-                            };
-                            bot.send_message(msg.chat.id, message).await?;
+                match query_ibc_denom_with_fallback(&chain_info.apis.rest, ibc_hash).await {
+                    Ok((path, base_denom)) => {
+                        let mut message = if !path.is_empty() {
+                            format!("✅ IBC Denom Trace Found:\n\nPath: {}\nBase Denomination: {}", path, base_denom)
+                        } else {
+                            format!("✅ IBC Denom Trace Found:\n\nBase Denomination: {}", base_denom)
+                        };
+
+                        // Try to extract channel from path and fetch route info
+                        if !path.is_empty() {
+                            if let Some(channel) = extract_channel_from_path(&path) {
+                                match query_ibc_channel_info_with_fallback(&chain_info.apis.rest, &channel, "transfer").await {
+                                    Ok(info) => {
+                                        message.push_str(&format!(
+                                            "\n\n📍 **Source Chain:** {}\n(via {})",
+                                            info.counterparty_chain_id,
+                                            channel
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        log::warn!("Could not fetch channel info for {}: {}", channel, e);
+                                    }
+                                }
+                            }
                         }
-                        Err(_) => {
-                            bot.send_message(msg.chat.id, "Failed to fetch IBC denom trace").await?;
-                        }
+
+                        bot.send_message(msg.chat.id, message).await?;
                     }
-                } else {
-                    bot.send_message(msg.chat.id, "No healthy REST endpoint found for this chain").await?;
+                    Err(e) => {
+                        let error_message = format!(
+                            "❌ Could not resolve IBC denom:\n{}\n\nThis denom might not exist on {} or the chain's REST API might be unavailable.",
+                            e, chain
+                        );
+                        bot.send_message(msg.chat.id, error_message).await?;
+                    }
                 }
             } else {
                 bot.send_message(msg.chat.id, "Chain not found").await?;
@@ -741,6 +775,89 @@ pub async fn handle_ibc_denom(
     Ok(())
 }
 
+pub async fn handle_ibc_channel(
+    bot: Bot,
+    dialogue: MyDialogue,
+    cache: Arc<RegistryCache>,
+    msg: Message,
+    chain: String,
+    _message_id: Option<MessageId>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(text) = msg.text() {
+        // Parse the input - could be "23", "channel-23", or "channel-23 transfer"
+        let parts: Vec<&str> = text.trim().split_whitespace().collect();
+        let channel_input = parts.get(0).unwrap_or(&"");
+        let port_id = parts.get(1).unwrap_or(&"transfer");
+
+        let channel_id = format_channel_input(channel_input);
+
+        // Validate channel format
+        if !channel_id.starts_with("channel-") {
+            bot.send_message(msg.chat.id, "Please enter a valid channel (e.g., 0, channel-0)").await?;
+            let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+            dialogue.update(State::ChainSelected {
+                chain: chain.clone(),
+                message_id: Some(new_menu_id)
+            }).await?;
+            return Ok(());
+        }
+
+        // Get chain info to find REST endpoints
+        if let Some(chain_info) = cache.get_chain(&chain).await? {
+            match query_ibc_channel_info_with_fallback(&chain_info.apis.rest, &channel_id, port_id).await {
+                Ok(info) => {
+                    let message = format!(
+                        "✅ IBC Route Information\n\n\
+                        **Source Chain:** {}\n\
+                        **Destination Chain:** {}\n\n\
+                        **Channel Details:**\n\
+                        • Channel: {}\n\
+                        • Port: {}\n\
+                        • Client ID: {}\n\
+                        • Connection: {}\n\n\
+                        **Counterparty Details:**\n\
+                        • Channel: {}\n\
+                        • Client ID: {}\n\
+                        • Connection: {}",
+                        info.chain_id,
+                        info.counterparty_chain_id,
+                        info.channel_id,
+                        port_id,
+                        info.client_id,
+                        info.connection_id,
+                        info.counterparty_channel_id,
+                        info.counterparty_client_id,
+                        info.counterparty_connection_id
+                    );
+                    bot.send_message(msg.chat.id, message).await?;
+                }
+                Err(e) => {
+                    let error_message = format!(
+                        "❌ Could not fetch IBC route info:\n{}\n\n\
+                        Make sure the channel exists on {}.",
+                        e, chain
+                    );
+                    bot.send_message(msg.chat.id, error_message).await?;
+                }
+            }
+        } else {
+            bot.send_message(msg.chat.id, "Chain not found").await?;
+        }
+
+        // Show the menu after showing IBC route info
+        let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+        dialogue.update(State::ChainSelected {
+            chain: chain.clone(),
+            message_id: Some(new_menu_id)
+        }).await?;
+    } else {
+        dialogue.update(State::ChainSelected {
+            chain,
+            message_id: None
+        }).await?;
+    }
+    Ok(())
+}
 
 pub async fn handle_text(
     bot: Bot,
@@ -756,22 +873,26 @@ pub async fn handle_text(
             let state = dialogue.get().await?.unwrap_or_default();
             match state {
                 State::ChainSelected { chain, message_id } => {
-                    let actions = vec![
-                        "chain_info",
-                        "peer_nodes",
-                        "endpoints",
-                        "explorers",
-                        "ibc_id",
-                    ];
-                    
+                    let actions = if !chain.contains("testnet") {
+                        vec![
+                            "chain_info",
+                            "peer_nodes",
+                            "endpoints",
+                            "explorers",
+                            "ibc_id",
+                            "ibc_route",
+                        ]
+                    } else {
+                        vec![
+                            "chain_info",
+                            "peer_nodes",
+                            "endpoints",
+                            "explorers",
+                        ]
+                    };
+
                     if num > 0 && num <= actions.len() {
                         let action = actions[num - 1];
-                        
-                        // Check if IBC-ID is valid for this chain
-                        if action == "ibc_id" && chain.contains("testnet") {
-                            bot.send_message(msg.chat.id, "IBC-ID is not available for testnets.").await?;
-                            return Ok(());
-                        }
                         
                         // Delete the previous menu if it exists
                         if let Some(menu_id) = message_id {
@@ -974,6 +1095,10 @@ pub async fn handle_text(
                                 dialogue.update(State::AwaitingIbcDenom { chain, message_id: Some(msg.id) }).await?;
                                 bot.send_message(msg.chat.id, "Enter IBC denom (e.g., ibc/ABC123...):").await?;
                             }
+                            "ibc_route" => {
+                                dialogue.update(State::AwaitingIbcChannel { chain, message_id: Some(msg.id) }).await?;
+                                bot.send_message(msg.chat.id, "Enter IBC channel (e.g., 0 or channel-0):\nOptionally add port (e.g., channel-0 transfer):").await?;
+                            }
                             _ => {}
                         }
                     } else {
@@ -1006,16 +1131,20 @@ pub async fn handle_text(
                             match query_ibc_denom(&rest, ibc_hash).await {
                                 Ok((path, base_denom)) => {
                                     let message = if !path.is_empty() {
-                                        format!("Path: {}\nBase Denomination: {}", path, base_denom)
+                                        format!("✅ IBC Denom Trace Found:\n\nPath: {}\nBase Denomination: {}", path, base_denom)
                                     } else {
-                                        format!("Base Denomination: {}", base_denom)
+                                        format!("✅ IBC Denom Trace Found:\n\nBase Denomination: {}", base_denom)
                                     };
                                     bot.send_message(msg.chat.id, message).await?;
                                 }
-                                Err(_) => {
+                                Err(e) => {
+                                    let error_message = format!(
+                                        "❌ Could not resolve IBC denom:\n{}\n\nThis denom might not exist on {} or the chain's REST API might be unavailable.",
+                                        e, chain
+                                    );
                                     bot.send_message(
                                         msg.chat.id,
-                                        "Failed to fetch IBC denom trace or it does not exist.",
+                                        error_message,
                                     )
                                     .await?;
                                 }

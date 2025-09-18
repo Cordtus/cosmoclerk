@@ -25,6 +25,10 @@ pub enum State {
         chain: String,
         message_id: Option<teloxide::types::MessageId>,
     },
+    AwaitingIbcChannel {
+        chain: String,
+        message_id: Option<teloxide::types::MessageId>,
+    },
 }
 
 pub async fn run(bot: Bot) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -55,12 +59,14 @@ fn schema() -> UpdateHandler<Box<dyn std::error::Error + Send + Sync + 'static>>
     let message_handler = Update::filter_message()
         .branch(command_handler)
         .branch(case![State::AwaitingIbcDenom { chain, message_id }].endpoint(handlers::handle_ibc_denom))
+        .branch(case![State::AwaitingIbcChannel { chain, message_id }].endpoint(handlers::handle_ibc_channel))
         .branch(dptree::endpoint(handlers::handle_text));
 
     let callback_handler = Update::filter_callback_query()
         .branch(case![State::SelectingChain { page, is_testnet, message_id, last_selected_chain }].endpoint(handlers::handle_chain_selection))
         .branch(case![State::ChainSelected { chain, message_id }].endpoint(handlers::handle_chain_action))
         .branch(case![State::AwaitingIbcDenom { chain, message_id }].endpoint(handlers::handle_chain_action))
+        .branch(case![State::AwaitingIbcChannel { chain, message_id }].endpoint(handlers::handle_chain_action))
         .branch(case![State::Start].endpoint(handlers::handle_callback))
         .branch(dptree::endpoint(handlers::handle_callback));
 
