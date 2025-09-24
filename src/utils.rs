@@ -1,6 +1,7 @@
 use reqwest;
 use serde_json::Value;
 use serde::{Deserialize, Serialize};
+use cosmos_chain_registry::chain;
 
 pub const PAGE_SIZE: usize = 18;
 
@@ -64,7 +65,7 @@ pub async fn check_endpoint_health(endpoint: &str, is_rpc: bool) -> bool {
 }
 
 pub async fn find_healthy_endpoint(
-    endpoints: &[chain_registry::chain::Rpc],
+    endpoints: &[chain::Rpc],
     is_rpc: bool,
 ) -> Option<String> {
     for endpoint in endpoints {
@@ -76,7 +77,7 @@ pub async fn find_healthy_endpoint(
 }
 
 pub async fn find_healthy_rest_endpoint(
-    endpoints: &[chain_registry::chain::Rest],
+    endpoints: &[chain::Rest],
 ) -> Option<String> {
     for endpoint in endpoints {
         if check_endpoint_health(&endpoint.address, false).await {
@@ -175,7 +176,7 @@ pub async fn query_ibc_denom(
 }
 
 pub async fn query_ibc_denom_with_fallback(
-    endpoints: &[chain_registry::chain::Rest],
+    endpoints: &[chain::Rest],
     ibc_hash: &str,
 ) -> anyhow::Result<(String, String)> {
     let mut last_error = None;
@@ -300,7 +301,7 @@ pub async fn query_ibc_channel_info(
 }
 
 pub async fn query_ibc_channel_info_with_fallback(
-    endpoints: &[chain_registry::chain::Rest],
+    endpoints: &[chain::Rest],
     channel_id: &str,
     port_id: &str,
 ) -> anyhow::Result<IbcChannelInfo> {

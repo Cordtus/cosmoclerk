@@ -7,8 +7,8 @@ edition = "2021"
 # Telegram bot framework
 teloxide = { version = "0.12", features = ["macros"] }
 
-# Our chain registry crate (using local version)
-chain-registry = { path = "../chain-registry_crate" }
+# Chain registry from crates.io
+cosmos-chain-registry = "0.3.0"
 
 # Async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

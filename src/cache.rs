@@ -1,4 +1,4 @@
-use chain_registry::get::{AssetList, ChainInfo};
+use cosmos_chain_registry::get::{AssetList, ChainInfo};
 use dashmap::DashMap;
 use std::time::{Duration, Instant};
 
@@ -37,13 +37,13 @@ impl RegistryCache {
         }
 
         // Try mainnet first
-        let chain = chain_registry::get::get_chain(name)
+        let chain = cosmos_chain_registry::get::get_chain(name)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         
         // If not found, try testnets
         let chain = if chain.is_none() {
-            chain_registry::get::get_chain(&format!("testnets/{}", name))
+            cosmos_chain_registry::get::get_chain(&format!("testnets/{}", name))
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?
         } else {
@@ -74,13 +74,13 @@ impl RegistryCache {
         }
 
         // Try mainnet first
-        let assets = chain_registry::get::get_assets(name)
+        let assets = cosmos_chain_registry::get::get_assets(name)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         
         // If not found, try testnets
         let assets = if assets.is_none() {
-            chain_registry::get::get_assets(&format!("testnets/{}", name))
+            cosmos_chain_registry::get::get_assets(&format!("testnets/{}", name))
                 .await
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?
         } else {
@@ -112,7 +112,7 @@ impl RegistryCache {
         }
 
         // Fetch mainnet chains
-        let chains = chain_registry::get::list_chains()
+        let chains = cosmos_chain_registry::get::list_chains()
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         
@@ -144,7 +144,7 @@ impl RegistryCache {
         }
 
         // Fetch testnet chains using the chain-registry crate
-        let testnets = chain_registry::get::list_testnets()
+        let testnets = cosmos_chain_registry::get::list_testnets()
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
