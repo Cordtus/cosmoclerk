@@ -143,34 +143,11 @@ impl RegistryCache {
             }
         }
 
-        // We need to fetch the contents of the testnets directory
-        // Since the chain-registry crate doesn't support this directly,
-        // we'll use the GitHub API
-        let url = "https://api.github.com/repos/cosmos/chain-registry/contents/testnets";
-        let client = reqwest::Client::new();
-        let response = client
-            .get(url)
-            .header("User-Agent", "cosmoclerk-bot")
-            .send()
+        // Fetch testnet chains using the chain-registry crate
+        let testnets = chain_registry::get::list_testnets()
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        
-        let contents: Vec<serde_json::Value> = response.json()
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        
-        let testnets: Vec<String> = contents
-            .iter()
-            .filter_map(|c| {
-                if c["type"] == "dir" {
-                    c["name"].as_str().map(|s| s.to_string())
-                } else {
-                    None
-                }
-            })
-            .filter(|name| !name.starts_with('_') && !name.starts_with('.'))
-            .collect();
-        
+
         self.chain_list.insert(
             "testnets".to_string(),
             CachedItem {
@@ -178,7 +155,7 @@ impl RegistryCache {
                 timestamp: Instant::now(),
             },
         );
-        
+
         Ok(testnets)
     }
 }
