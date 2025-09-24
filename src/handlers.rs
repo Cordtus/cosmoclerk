@@ -314,11 +314,14 @@ async fn show_chain_menu(
         ],
     ];
     
-    // Add IBC option for mainnets
+    // Add IBC options for mainnets
     if !chain.contains("testnet") {
-        buttons.push(vec![InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id")]);
+        buttons.push(vec![
+            InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
+            InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
+        ]);
     }
-    
+
     buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
     
     let keyboard = InlineKeyboardMarkup::new(buttons);
@@ -1198,11 +1201,14 @@ pub async fn handle_text(
                 ],
             ];
             
-            // Add IBC option for mainnets
+            // Add IBC options for mainnets
             // Check if it's a testnet by seeing if it's in the testnets list
             let testnets = cache.list_testnets().await.unwrap_or_default();
             if !testnets.iter().any(|t| t.to_lowercase() == text_lower) {
-                buttons.push(vec![InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id")]);
+                buttons.push(vec![
+                    InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
+                    InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
+                ]);
             }
             
             buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
