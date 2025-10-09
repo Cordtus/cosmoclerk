@@ -4,3 +4,18 @@ chain_registry/
 chain-registry1/
 target/
 Cargo.lock
+
+# Backup files
+*.bak
+*~
+*.swp
+*.swo
+
+# JavaScript artifacts (legacy - Rust version is active)
+package.json
+package-lock.json
+yarn.lock
+
+# Claude Code artifacts
+CLAUDE.md
+.claude/

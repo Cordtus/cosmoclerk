@@ -14,13 +14,13 @@ A Rust implementation of the CosmoClerk Telegram bot using the [chain-registry-r
 
 All features from the original JS version are supported:
 
-- ✅ Chain selection with pagination
-- ✅ Chain info display (ID, name, RPC, REST, etc.)
-- ✅ Peer nodes listing
-- ✅ Endpoints display (RPC, REST, GRPC)
-- ✅ Block explorers
-- ✅ IBC denomination lookup
-- ✅ Osmosis-specific features:
+-  Chain selection with pagination
+-  Chain info display (ID, name, RPC, REST, etc.)
+-  Peer nodes listing
+-  Endpoints display (RPC, REST, GRPC)
+-  Block explorers
+-  IBC denomination lookup
+-  Osmosis-specific features:
   - Pool incentives
   - Pool info
   - Price info

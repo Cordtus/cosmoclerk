@@ -653,7 +653,7 @@ async fn show_endpoints(
         }
         
         message.push_str("\n*GRPC*\n\\-\\-\\-\\-\n");
-        
+
         for grpc in chain_info.apis.grpc.iter().take(5) {
             let provider = grpc.provider.as_deref().unwrap_or("unknown");
             message.push_str(&format!(
@@ -662,7 +662,20 @@ async fn show_endpoints(
                 escape_markdown(&grpc.address)
             ));
         }
-        
+
+        if !chain_info.apis.evm_http_jsonrpc.is_empty() {
+            message.push_str("\n*EVM RPC*\n\\-\\-\\-\\-\\-\\-\\-\\-\n");
+
+            for evm_rpc in chain_info.apis.evm_http_jsonrpc.iter().take(5) {
+                let provider = evm_rpc.provider.as_deref().unwrap_or("unknown");
+                message.push_str(&format!(
+                    "*{}*:\n`{}`\n\n",
+                    escape_markdown(provider),
+                    escape_markdown(&evm_rpc.address)
+                ));
+            }
+        }
+
         // Send as new message instead of editing
         if let Some(Message { chat, .. }) = &q.message {
             bot.send_message(chat.id, message)
@@ -1042,7 +1055,7 @@ pub async fn handle_text(
                                     }
                                     
                                     message.push_str("\n*GRPC*\n\\-\\-\\-\\-\n");
-                                    
+
                                     for grpc in chain_info.apis.grpc.iter().take(5) {
                                         let provider = grpc.provider.as_deref().unwrap_or("unknown");
                                         message.push_str(&format!(
@@ -1051,7 +1064,20 @@ pub async fn handle_text(
                                             escape_markdown(&grpc.address)
                                         ));
                                     }
-                                    
+
+                                    if !chain_info.apis.evm_http_jsonrpc.is_empty() {
+                                        message.push_str("\n*EVM RPC*\n\\-\\-\\-\\-\\-\\-\\-\\-\n");
+
+                                        for evm_rpc in chain_info.apis.evm_http_jsonrpc.iter().take(5) {
+                                            let provider = evm_rpc.provider.as_deref().unwrap_or("unknown");
+                                            message.push_str(&format!(
+                                                "*{}*:\n`{}`\n\n",
+                                                escape_markdown(provider),
+                                                escape_markdown(&evm_rpc.address)
+                                            ));
+                                        }
+                                    }
+
                                     bot.send_message(msg.chat.id, message)
                                         .parse_mode(ParseMode::MarkdownV2)
                                         .await?;
