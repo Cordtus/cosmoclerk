@@ -8,7 +8,8 @@ A Rust implementation of the CosmoClerk Telegram bot using the [chain-registry-r
 - **Built-in Caching**: 30-minute TTL cache reduces API calls and improves response times (~50µs cached vs ~500ms network)
 - **Type Safety**: Rust's strong typing ensures data integrity
 - **Lower Memory Footprint**: No need to store entire registry locally
-- **Better Performance**: Compiled Rust binary vs interpreted JavaScript
+# Built-in Caching: 30-minute TTL cache reduces API calls and improves response times
+- **Built-in Caching**: 30-minute TTL cache reduces API calls and improves response times (~50µs cached vs ~500ms network)
 
 ## Features
 
