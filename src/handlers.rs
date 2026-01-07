@@ -3,7 +3,8 @@ use crate::{
     cache::RegistryCache,
     utils::{escape_markdown, find_healthy_endpoint, find_healthy_rest_endpoint,
             query_ibc_denom, query_ibc_denom_with_fallback, query_ibc_channel_info_with_fallback,
-            extract_channel_from_path, format_channel_input, query_abci_info, PAGE_SIZE},
+            extract_channel_from_path, format_channel_input, query_abci_info,
+            get_polkachu_installation_url, PAGE_SIZE},
 };
 use std::sync::Arc;
 use teloxide::{
@@ -309,13 +310,18 @@ async fn show_chain_menu(
             InlineKeyboardButton::callback("4. Block Explorers", "action:explorers"),
         ],
     ];
-    
+
     // Add IBC options for mainnets
     if !chain.contains("testnet") {
         buttons.push(vec![
             InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
             InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
         ]);
+    }
+
+    // Add installation guide link if available on Polkachu
+    if let Some(install_url) = get_polkachu_installation_url(chain) {
+        buttons.push(vec![InlineKeyboardButton::url("Node Installation Guide", install_url.parse().unwrap())]);
     }
 
     buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
@@ -378,6 +384,11 @@ async fn send_chain_menu(
             InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
             InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
         ]);
+    }
+
+    // Add installation guide link if available on Polkachu
+    if let Some(install_url) = get_polkachu_installation_url(chain) {
+        buttons.push(vec![InlineKeyboardButton::url("Node Installation Guide", install_url.parse().unwrap())]);
     }
 
     buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
@@ -1262,7 +1273,7 @@ pub async fn handle_text(
                     InlineKeyboardButton::callback("4. Block Explorers", "action:explorers"),
                 ],
             ];
-            
+
             // Add IBC options for mainnets
             // Check if it's a testnet by seeing if it's in the testnets list
             let testnets = cache.list_testnets().await.unwrap_or_default();
@@ -1272,7 +1283,12 @@ pub async fn handle_text(
                     InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
                 ]);
             }
-            
+
+            // Add installation guide link if available on Polkachu
+            if let Some(install_url) = get_polkachu_installation_url(&text_lower) {
+                buttons.push(vec![InlineKeyboardButton::url("Node Installation Guide", install_url.parse().unwrap())]);
+            }
+
             buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
             
             let keyboard = InlineKeyboardMarkup::new(buttons);

@@ -2,8 +2,52 @@ use reqwest;
 use serde_json::Value;
 use serde::{Deserialize, Serialize};
 use cosmos_chain_registry::chain;
+use std::collections::HashMap;
 
 pub const PAGE_SIZE: usize = 18;
+
+/// Returns the Polkachu installation guide URL for a chain if supported
+pub fn get_polkachu_installation_url(chain_name: &str) -> Option<String> {
+    // Map chain registry names to Polkachu URL slugs
+    let special_mappings: HashMap<&str, &str> = [
+        ("cosmoshub", "cosmos"),
+        ("fetchhub", "fetch"),
+        ("elysnetwork", "elys"),
+        ("elys", "elys"),
+        ("hippo", "hippo"),
+    ].into_iter().collect();
+
+    // All supported chains on Polkachu (verified working)
+    let supported: std::collections::HashSet<&str> = [
+        "axelar", "babylon", "celestia", "cosmos", "dydx", "initia",
+        "injective", "osmosis", "sei", "akash", "allora", "althea",
+        "andromeda", "archway", "arkeo", "atomone", "aura", "band",
+        "bitcanna", "bitsong", "bitway", "canto", "chain4energy", "cheqd",
+        "chihuahua", "comdex", "crescent", "cronos", "decentr", "dhealth",
+        "dymension", "elys", "evmos", "fetch", "functionx", "gitopia",
+        "gravity", "haqq", "hippo", "humans", "intento", "jackal", "juno",
+        "kava", "kichain", "kopi", "kujira", "kyve", "loyal", "lum",
+        "lumera", "mantra", "meme", "milkyway", "neutron", "nibiru",
+        "nillion", "noble", "nolus", "nym", "odin", "omniflix", "passage",
+        "persistence", "picasso", "planq", "provenance", "quicksilver",
+        "saga", "shentu", "shido", "sifchain", "sommelier", "source",
+        "stargaze", "stride", "sunrise", "symphony", "tacchain", "teritori",
+        "terra", "umee", "ununifi", "xpla",
+    ].into_iter().collect();
+
+    let chain_lower = chain_name.to_lowercase();
+
+    // Check for special mapping first
+    let slug = special_mappings.get(chain_lower.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| chain_lower.clone());
+
+    if supported.contains(slug.as_str()) {
+        Some(format!("https://polkachu.com/installation/{}", slug))
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IbcChannelInfo {
