@@ -365,3 +365,37 @@ pub fn escape_markdown(text: &str) -> String {
         })
         .collect()
 }
+
+/// ABCI info response containing version and block data
+#[derive(Debug, Clone)]
+pub struct AbciInfo {
+    pub version: String,
+    pub last_block_height: String,
+    pub last_block_app_hash: String,
+}
+
+/// Query the ABCI info endpoint to get the chain's software version and block info
+pub async fn query_abci_info(rpc_endpoint: &str) -> Option<AbciInfo> {
+    let url = format!("{}/abci_info", rpc_endpoint.trim_end_matches('/'));
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+
+    let response = client.get(&url).send().await.ok()?;
+
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let json: Value = response.json().await.ok()?;
+
+    let resp = &json["result"]["response"];
+
+    Some(AbciInfo {
+        version: resp["version"].as_str().unwrap_or("Unknown").to_string(),
+        last_block_height: resp["last_block_height"].as_str().unwrap_or("Unknown").to_string(),
+        last_block_app_hash: resp["last_block_app_hash"].as_str().unwrap_or("Unknown").to_string(),
+    })
+}

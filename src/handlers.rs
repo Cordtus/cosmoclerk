@@ -3,7 +3,7 @@ use crate::{
     cache::RegistryCache,
     utils::{escape_markdown, find_healthy_endpoint, find_healthy_rest_endpoint,
             query_ibc_denom, query_ibc_denom_with_fallback, query_ibc_channel_info_with_fallback,
-            extract_channel_from_path, format_channel_input, PAGE_SIZE},
+            extract_channel_from_path, format_channel_input, query_abci_info, PAGE_SIZE},
 };
 use std::sync::Arc;
 use teloxide::{
@@ -94,12 +94,10 @@ async fn show_chain_selection(
     is_testnet: bool,
     last_selected: Option<&String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let chains = cache.list_chains().await?;
-    
     let filtered_chains: Vec<String> = if is_testnet {
-        chains.into_iter().filter(|c| c.contains("testnet")).collect()
+        cache.list_testnets().await?
     } else {
-        chains.into_iter().filter(|c| !c.contains("testnet")).collect()
+        cache.list_chains().await?
     };
 
     let total_pages = (filtered_chains.len() + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -210,12 +208,10 @@ async fn update_chain_selection(
     is_testnet: bool,
     last_selected: Option<&String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let chains = cache.list_chains().await?;
-    
     let filtered_chains: Vec<String> = if is_testnet {
-        chains.into_iter().filter(|c| c.contains("testnet")).collect()
+        cache.list_testnets().await?
     } else {
-        chains.into_iter().filter(|c| !c.contains("testnet")).collect()
+        cache.list_chains().await?
     };
 
     let total_pages = (filtered_chains.len() + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -519,29 +515,36 @@ async fn show_chain_info(
             .first()
             .map(|t| t.denom.as_str())
             .unwrap_or("Unknown");
-        
+
         let decimals = assets
             .assets
             .first()
             .and_then(|a| a.denom_units.last())
             .map(|d| d.exponent.to_string())
             .unwrap_or_else(|| "Unknown".to_string());
-        
+
         let rpc = find_healthy_endpoint(&chain_info.apis.rpc, true)
             .await
             .unwrap_or_else(|| "Unknown".to_string());
-        
+
         let rest = find_healthy_rest_endpoint(&chain_info.apis.rest)
             .await
             .unwrap_or_else(|| "Unknown".to_string());
-        
+
         let explorer = chain_info
             .explorers
             .first()
             .map(|e| e.url.as_str())
             .unwrap_or("Unknown");
-        
-        let message = format!(
+
+        // Query ABCI info for version and block data
+        let abci_info = if rpc != "Unknown" {
+            query_abci_info(&rpc).await
+        } else {
+            None
+        };
+
+        let mut message = format!(
             "🔗 *{}*\n\n\
             Chain ID: `{}`\n\
             Chain Name: `{}`\n\
@@ -563,7 +566,20 @@ async fn show_chain_info(
             decimals,
             escape_markdown(explorer)
         );
-        
+
+        // Append ABCI info if available
+        if let Some(info) = abci_info {
+            message.push_str(&format!(
+                "\n\n*Node Status*\n\
+                Version: `{}`\n\
+                Latest Block: `{}`\n\
+                App Hash: `{}`",
+                escape_markdown(&info.version),
+                escape_markdown(&info.last_block_height),
+                escape_markdown(&info.last_block_app_hash)
+            ));
+        }
+
         // Send as new message instead of editing
         if let Some(Message { chat, .. }) = &q.message {
             bot.send_message(chat.id, message)
@@ -921,7 +937,7 @@ pub async fn handle_text(
                             "chain_info" => {
                                 let chain_data = cache.get_chain(&chain).await?;
                                 let assets_data = cache.get_assets(&chain).await?;
-                                
+
                                 if let (Some(chain_info), Some(assets)) = (chain_data, assets_data) {
                                     let base_denom = chain_info
                                         .staking
@@ -929,29 +945,36 @@ pub async fn handle_text(
                                         .first()
                                         .map(|t| t.denom.as_str())
                                         .unwrap_or("Unknown");
-                                    
+
                                     let decimals = assets
                                         .assets
                                         .first()
                                         .and_then(|a| a.denom_units.last())
                                         .map(|d| d.exponent.to_string())
                                         .unwrap_or_else(|| "Unknown".to_string());
-                                    
+
                                     let rpc = find_healthy_endpoint(&chain_info.apis.rpc, true)
                                         .await
                                         .unwrap_or_else(|| "Unknown".to_string());
-                                    
+
                                     let rest = find_healthy_rest_endpoint(&chain_info.apis.rest)
                                         .await
                                         .unwrap_or_else(|| "Unknown".to_string());
-                                    
+
                                     let explorer = chain_info
                                         .explorers
                                         .first()
                                         .map(|e| e.url.as_str())
                                         .unwrap_or("Unknown");
-                                    
-                                    let message = format!(
+
+                                    // Query ABCI info for version and block data
+                                    let abci_info = if rpc != "Unknown" {
+                                        query_abci_info(&rpc).await
+                                    } else {
+                                        None
+                                    };
+
+                                    let mut message = format!(
                                         "🔗 *{}*\n\n\
                                         Chain ID: `{}`\n\
                                         Chain Name: `{}`\n\
@@ -973,7 +996,20 @@ pub async fn handle_text(
                                         decimals,
                                         escape_markdown(explorer)
                                     );
-                                    
+
+                                    // Append ABCI info if available
+                                    if let Some(info) = abci_info {
+                                        message.push_str(&format!(
+                                            "\n\n*Node Status*\n\
+                                            Version: `{}`\n\
+                                            Latest Block: `{}`\n\
+                                            App Hash: `{}`",
+                                            escape_markdown(&info.version),
+                                            escape_markdown(&info.last_block_height),
+                                            escape_markdown(&info.last_block_app_hash)
+                                        ));
+                                    }
+
                                     bot.send_message(msg.chat.id, message)
                                         .parse_mode(ParseMode::MarkdownV2)
                                         .await?;
