@@ -19,3 +19,4 @@ yarn.lock
 # Claude Code artifacts
 CLAUDE.md
 .claude/
+.serena/
