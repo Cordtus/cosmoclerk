@@ -29,6 +29,10 @@ pub enum State {
         chain: String,
         message_id: Option<teloxide::types::MessageId>,
     },
+    AwaitingWalletAddress {
+        chain: String,
+        message_id: Option<teloxide::types::MessageId>,
+    },
 }
 
 pub async fn run(bot: Bot) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -60,6 +64,7 @@ fn schema() -> UpdateHandler<Box<dyn std::error::Error + Send + Sync + 'static>>
         .branch(command_handler)
         .branch(case![State::AwaitingIbcDenom { chain, message_id }].endpoint(handlers::handle_ibc_denom))
         .branch(case![State::AwaitingIbcChannel { chain, message_id }].endpoint(handlers::handle_ibc_channel))
+        .branch(case![State::AwaitingWalletAddress { chain, message_id }].endpoint(handlers::handle_wallet_address))
         .branch(dptree::endpoint(handlers::handle_text));
 
     let callback_handler = Update::filter_callback_query()
@@ -67,6 +72,7 @@ fn schema() -> UpdateHandler<Box<dyn std::error::Error + Send + Sync + 'static>>
         .branch(case![State::ChainSelected { chain, message_id }].endpoint(handlers::handle_chain_action))
         .branch(case![State::AwaitingIbcDenom { chain, message_id }].endpoint(handlers::handle_chain_action))
         .branch(case![State::AwaitingIbcChannel { chain, message_id }].endpoint(handlers::handle_chain_action))
+        .branch(case![State::AwaitingWalletAddress { chain, message_id }].endpoint(handlers::handle_chain_action))
         .branch(case![State::Start].endpoint(handlers::handle_callback))
         .branch(dptree::endpoint(handlers::handle_callback));
 

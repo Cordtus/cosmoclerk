@@ -4,7 +4,8 @@ use crate::{
     utils::{escape_markdown, find_healthy_endpoint, find_healthy_rest_endpoint,
             query_ibc_denom, query_ibc_denom_with_fallback, query_ibc_channel_info_with_fallback,
             extract_channel_from_path, format_channel_input, query_abci_info,
-            get_polkachu_installation_url, PAGE_SIZE},
+            get_polkachu_installation_url, query_balances_with_fallback, format_amount,
+            truncate_ibc_hash, PAGE_SIZE},
 };
 use std::sync::Arc;
 use teloxide::{
@@ -311,11 +312,14 @@ async fn show_chain_menu(
         ],
     ];
 
-    // Add IBC options for mainnets
+    // Add IBC options and balance check for mainnets
     if !chain.contains("testnet") {
         buttons.push(vec![
             InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
             InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
+        ]);
+        buttons.push(vec![
+            InlineKeyboardButton::callback("7. Check Balance", "action:check_balance"),
         ]);
     }
 
@@ -325,9 +329,9 @@ async fn show_chain_menu(
     }
 
     buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
-    
+
     let keyboard = InlineKeyboardMarkup::new(buttons);
-    
+
     // Send as a new message instead of editing
     if let Some(Message { chat, .. }) = &q.message {
         let sent_msg = bot.send_message(chat.id, format!("Selected: {}\n\nChoose an action:", chain))
@@ -378,11 +382,14 @@ async fn send_chain_menu(
         ],
     ];
 
-    // Add IBC options for mainnets
+    // Add IBC options and balance check for mainnets
     if !chain.contains("testnet") {
         buttons.push(vec![
             InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
             InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
+        ]);
+        buttons.push(vec![
+            InlineKeyboardButton::callback("7. Check Balance", "action:check_balance"),
         ]);
     }
 
@@ -394,14 +401,14 @@ async fn send_chain_menu(
     buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
 
     let keyboard = InlineKeyboardMarkup::new(buttons);
-    
+
     let sent_msg = bot.send_message(
         msg.chat.id,
         format!("Selected: {}\n\nChoose an action:", chain),
     )
     .reply_markup(keyboard)
     .await?;
-    
+
     Ok(sent_msg.id)
 }
 
@@ -488,6 +495,16 @@ pub async fn handle_chain_action(
                     let msg_id = q.message.as_ref().map(|m| m.id);
                     dialogue.update(State::AwaitingIbcChannel { chain, message_id: msg_id }).await?;
                     bot.send_message(chat.id, "Enter IBC channel (e.g., 0 or channel-0):\nOptionally add port (e.g., channel-0 transfer):")
+                        .await?;
+                }
+            }
+            "action:check_balance" => {
+                // Delete the menu with effect
+                if let Some(Message { id, chat, .. }) = &q.message {
+                    delete_message_with_effect(&bot, chat.id, *id).await?;
+                    let msg_id = q.message.as_ref().map(|m| m.id);
+                    dialogue.update(State::AwaitingWalletAddress { chain, message_id: msg_id }).await?;
+                    bot.send_message(chat.id, "Enter wallet address to check balance:")
                         .await?;
                 }
             }
@@ -901,6 +918,116 @@ pub async fn handle_ibc_channel(
     Ok(())
 }
 
+pub async fn handle_wallet_address(
+    bot: Bot,
+    dialogue: MyDialogue,
+    cache: Arc<RegistryCache>,
+    msg: Message,
+    (chain, _message_id): (String, Option<MessageId>),
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(text) = msg.text() {
+        let address = text.trim();
+
+        // Basic validation
+        if address.is_empty() || address.len() < 10 || address.len() > 100 {
+            bot.send_message(msg.chat.id, "Please enter a valid wallet address.").await?;
+            let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+            dialogue.update(State::ChainSelected {
+                chain: chain.clone(),
+                message_id: Some(new_menu_id)
+            }).await?;
+            return Ok(());
+        }
+
+        // Get chain info to find REST endpoints
+        if let Some(chain_info) = cache.get_chain(&chain).await? {
+            match query_balances_with_fallback(&chain_info.apis.rest, address, None).await {
+                Ok((balances, next_key)) => {
+                    if balances.is_empty() {
+                        let message = format!(
+                            "No balances found for address:\n`{}`\n\n\
+                            The address might be empty or invalid for {}\\.",
+                            escape_markdown(address),
+                            escape_markdown(&chain)
+                        );
+                        bot.send_message(msg.chat.id, message)
+                            .parse_mode(ParseMode::MarkdownV2)
+                            .await?;
+                    } else {
+                        // Build balance list with IBC denom resolution
+                        let mut balance_lines = Vec::new();
+                        for bal in &balances {
+                            let display_denom = if bal.denom.starts_with("ibc/") {
+                                // Try to resolve IBC denom
+                                let ibc_hash = bal.denom.strip_prefix("ibc/").unwrap_or(&bal.denom);
+                                match query_ibc_denom_with_fallback(&chain_info.apis.rest, ibc_hash).await {
+                                    Ok((_path, base_denom)) => {
+                                        format!("{} \\({}\\)", escape_markdown(&base_denom), escape_markdown(&truncate_ibc_hash(&bal.denom)))
+                                    }
+                                    Err(_) => escape_markdown(&bal.denom),
+                                }
+                            } else {
+                                escape_markdown(&bal.denom)
+                            };
+
+                            balance_lines.push(format!(
+                                "{} {}",
+                                escape_markdown(&format_amount(&bal.amount)),
+                                display_denom
+                            ));
+                        }
+
+                        let truncated_addr = if address.len() > 20 {
+                            format!("{}\\.\\.\\.", escape_markdown(&address[..20]))
+                        } else {
+                            escape_markdown(address)
+                        };
+
+                        let mut message = format!(
+                            "💰 *Balances for* `{}`:\n\n{}",
+                            truncated_addr,
+                            balance_lines.join("\n")
+                        );
+
+                        if next_key.is_some() {
+                            message.push_str("\n\n_Showing first 100 tokens \\(more available\\)_");
+                        }
+
+                        bot.send_message(msg.chat.id, message)
+                            .parse_mode(ParseMode::MarkdownV2)
+                            .await?;
+                    }
+                }
+                Err(e) => {
+                    let error_message = format!(
+                        "❌ Could not fetch balances:\n{}\n\n\
+                        The address might be invalid or the chain's REST API might be unavailable\\.",
+                        escape_markdown(&e.to_string())
+                    );
+                    bot.send_message(msg.chat.id, error_message)
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .await?;
+                }
+            }
+        } else {
+            bot.send_message(msg.chat.id, "Chain not found").await?;
+        }
+
+        // Show the menu after showing balance info
+        let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+        dialogue.update(State::ChainSelected {
+            chain: chain.clone(),
+            message_id: Some(new_menu_id)
+        }).await?;
+    } else {
+        dialogue.update(State::ChainSelected {
+            chain,
+            message_id: None
+        }).await?;
+    }
+    Ok(())
+}
+
 pub async fn handle_text(
     bot: Bot,
     dialogue: MyDialogue,
@@ -909,7 +1036,7 @@ pub async fn handle_text(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(text) = msg.text() {
         let text_lower = text.to_lowercase();
-        
+
         // Handle numeric menu selection
         if let Ok(num) = text.parse::<usize>() {
             let state = dialogue.get().await?.unwrap_or_default();
@@ -923,6 +1050,7 @@ pub async fn handle_text(
                             "explorers",
                             "ibc_id",
                             "ibc_route",
+                            "check_balance",
                         ]
                     } else {
                         vec![
@@ -1174,6 +1302,10 @@ pub async fn handle_text(
                                 dialogue.update(State::AwaitingIbcChannel { chain, message_id: Some(msg.id) }).await?;
                                 bot.send_message(msg.chat.id, "Enter IBC channel (e.g., 0 or channel-0):\nOptionally add port (e.g., channel-0 transfer):").await?;
                             }
+                            "check_balance" => {
+                                dialogue.update(State::AwaitingWalletAddress { chain, message_id: Some(msg.id) }).await?;
+                                bot.send_message(msg.chat.id, "Enter wallet address to check balance:").await?;
+                            }
                             _ => {}
                         }
                     } else {
@@ -1274,13 +1406,16 @@ pub async fn handle_text(
                 ],
             ];
 
-            // Add IBC options for mainnets
+            // Add IBC options and balance check for mainnets
             // Check if it's a testnet by seeing if it's in the testnets list
             let testnets = cache.list_testnets().await.unwrap_or_default();
             if !testnets.iter().any(|t| t.to_lowercase() == text_lower) {
                 buttons.push(vec![
                     InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
                     InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
+                ]);
+                buttons.push(vec![
+                    InlineKeyboardButton::callback("7. Check Balance", "action:check_balance"),
                 ]);
             }
 

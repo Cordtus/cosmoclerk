@@ -443,3 +443,124 @@ pub async fn query_abci_info(rpc_endpoint: &str) -> Option<AbciInfo> {
         last_block_app_hash: resp["last_block_app_hash"].as_str().unwrap_or("Unknown").to_string(),
     })
 }
+
+/// Balance entry from bank query
+#[derive(Debug, Clone)]
+pub struct Balance {
+    pub denom: String,
+    pub amount: String,
+}
+
+/// Query wallet balances from chain REST API
+/// Returns balances and optional pagination key for next page
+pub async fn query_balances(
+    rest_endpoint: &str,
+    address: &str,
+    pagination_key: Option<&str>,
+) -> anyhow::Result<(Vec<Balance>, Option<String>)> {
+    let base_url = rest_endpoint.trim_end_matches('/');
+
+    let url = match pagination_key {
+        Some(key) => format!(
+            "{}/cosmos/bank/v1beta1/balances/{}?pagination.limit=100&pagination.key={}",
+            base_url, address, key
+        ),
+        None => format!(
+            "{}/cosmos/bank/v1beta1/balances/{}?pagination.limit=100",
+            base_url, address
+        ),
+    };
+
+    log::info!("Querying balances at: {}", url);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+
+    let response = client.get(&url).send().await?;
+
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "Balance query failed with status: {}",
+            response.status()
+        ));
+    }
+
+    let json: Value = response.json().await?;
+    log::debug!("Balance response: {}", json);
+
+    let balances = json["balances"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Invalid response: missing balances array"))?
+        .iter()
+        .filter_map(|b| {
+            let denom = b["denom"].as_str()?.to_string();
+            let amount = b["amount"].as_str()?.to_string();
+            Some(Balance { denom, amount })
+        })
+        .collect();
+
+    // Check for pagination
+    let next_key = json["pagination"]["next_key"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    Ok((balances, next_key))
+}
+
+/// Query balances with fallback to multiple REST endpoints
+pub async fn query_balances_with_fallback(
+    endpoints: &[chain::Rest],
+    address: &str,
+    pagination_key: Option<&str>,
+) -> anyhow::Result<(Vec<Balance>, Option<String>)> {
+    let mut last_error = None;
+    let max_attempts = 3.min(endpoints.len());
+
+    for endpoint in endpoints.iter().take(max_attempts) {
+        // Skip non-HTTPS endpoints
+        if endpoint.address.starts_with("http://") || endpoint.address.is_empty() {
+            continue;
+        }
+
+        log::info!("Trying REST endpoint for balances: {}", endpoint.address);
+
+        match query_balances(&endpoint.address, address, pagination_key).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!("Failed with endpoint {}: {}", endpoint.address, e);
+                last_error = Some(e);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available for balance query")))
+}
+
+/// Format amount with thousands separators
+pub fn format_amount(amount: &str) -> String {
+    // Parse the amount string as a number and format with commas
+    if let Ok(num) = amount.parse::<u128>() {
+        let s = num.to_string();
+        let mut result = String::new();
+        for (i, c) in s.chars().rev().enumerate() {
+            if i > 0 && i % 3 == 0 {
+                result.insert(0, ',');
+            }
+            result.insert(0, c);
+        }
+        result
+    } else {
+        amount.to_string()
+    }
+}
+
+/// Truncate IBC hash for display (e.g., "ibc/27A6..." showing first 8 chars after ibc/)
+pub fn truncate_ibc_hash(hash: &str) -> String {
+    if hash.len() > 12 {
+        format!("{}...", &hash[..12])
+    } else {
+        hash.to_string()
+    }
+}
