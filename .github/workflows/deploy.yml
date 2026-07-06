@@ -1,0 +1,36 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: LXC container name on the self-hosted runner
+        required: true
+        default: tgbot
+      service:
+        description: systemd unit name
+        required: true
+        default: cosmoclerk.service
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deploy:
+    name: deploy to LXC
+    runs-on: self-hosted
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Deploy
+        env:
+          DEPLOY_TARGET: ${{ inputs.target }}
+          DEPLOY_SERVICE: ${{ inputs.service }}
+        run: ./scripts/deploy.sh

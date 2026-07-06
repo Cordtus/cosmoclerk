@@ -51,14 +51,11 @@ cargo run --release
 # Run with debug logging
 RUST_LOG=debug cargo run
 
-# Check code
-cargo check
+# Run the full local pre-build gate
+./scripts/check.sh
 
-# Run tests
-cargo test
-
-# Format code
-cargo fmt
+# Build with pre-build checks
+./scripts/build.sh
 ```
 
 ## Architecture
@@ -82,12 +79,22 @@ Legacy JavaScript/TypeScript versions are archived on isolated branches. The act
 
 ## Deployment
 
-The compiled binary is self-contained and can be deployed anywhere:
+The compiled binary is self-contained and can be deployed anywhere. For the
+standard systemd/LXC deployment used by this repo, keep the bot token in
+`/etc/cosmoclerk/.env` on the target and run:
 
 ```bash
-cargo build --release
-cp target/release/cosmoclerk /path/to/deployment/
+DEPLOY_TARGET=tgbot ./scripts/deploy.sh
 ```
+
+`scripts/deploy.sh` builds the release binary, pushes it to
+`/usr/local/bin/cosmoclerk`, installs `cosmoclerk.service`, restarts the service,
+checks that it is active, and prints recent logs. It does not copy `.env` or any
+secret material.
+
+For a generic host, run `./scripts/build.sh` and copy
+`target/release/cosmoclerk` plus `cosmoclerk.service` using your host's release
+process.
 
 ## Docker
 

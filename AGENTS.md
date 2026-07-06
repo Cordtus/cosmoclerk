@@ -5,9 +5,12 @@ CosmoClerk is a Rust 2021 Telegram bot for Cosmos chain-registry lookups. Source
 
 ## Build, Test, and Development Commands
 - `cp .env.example .env` then set `BOT_TOKEN` before running locally.
-- `cargo check` validates Rust types quickly.
+- `./scripts/check.sh` runs the local pre-build gate: `cargo fmt -- --check`, `cargo check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test`.
+- `./scripts/build.sh` runs the pre-build gate, then creates `target/release/cosmoclerk`.
+- `./scripts/build.sh --skip-checks` creates the release binary after checks have already passed.
+- `DEPLOY_TARGET=tgbot ./scripts/deploy.sh` builds, installs the binary and systemd unit into the LXC target, restarts the service, and prints recent logs.
+- `cargo check` validates Rust types quickly when a narrower loop is useful.
 - `RUST_LOG=debug cargo run` starts the bot with verbose logging.
-- `cargo build --release` creates `target/release/cosmoclerk` for deployment.
 - `cargo test` runs the async unit tests in `src/tests.rs`.
 - `cargo fmt -- --check` and `cargo clippy --all-targets -- -D warnings` are the preferred pre-PR style and lint gates.
 
