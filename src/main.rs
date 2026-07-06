@@ -2,8 +2,8 @@ mod bot;
 mod cache;
 mod commands;
 mod handlers;
-mod utils;
 mod tests;
+mod utils;
 
 use anyhow::Result;
 use dotenv::dotenv;
@@ -17,12 +17,14 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let bot_token = env::var("BOT_TOKEN").expect("BOT_TOKEN must be set");
-    
+
     info!("Starting CosmoClerk Rust bot...");
-    
+
     let bot = Bot::new(bot_token);
-    
-    bot::run(bot).await.map_err(|e| anyhow::anyhow!("Bot error: {}", e))?;
-    
+
+    bot::run(bot)
+        .await
+        .map_err(|e| anyhow::anyhow!("Bot error: {}", e))?;
+
     Ok(())
 }

@@ -1,7 +1,6 @@
-use reqwest;
-use serde_json::Value;
-use serde::{Deserialize, Serialize};
 use cosmos_chain_registry::chain;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 
 pub const PAGE_SIZE: usize = 18;
@@ -15,30 +14,105 @@ pub fn get_polkachu_installation_url(chain_name: &str) -> Option<String> {
         ("elysnetwork", "elys"),
         ("elys", "elys"),
         ("hippo", "hippo"),
-    ].into_iter().collect();
+    ]
+    .into_iter()
+    .collect();
 
     // All supported chains on Polkachu (verified working)
     let supported: std::collections::HashSet<&str> = [
-        "axelar", "babylon", "celestia", "cosmos", "dydx", "initia",
-        "injective", "osmosis", "sei", "akash", "allora", "althea",
-        "andromeda", "archway", "arkeo", "atomone", "aura", "band",
-        "bitcanna", "bitsong", "bitway", "canto", "chain4energy", "cheqd",
-        "chihuahua", "comdex", "crescent", "cronos", "decentr", "dhealth",
-        "dymension", "elys", "evmos", "fetch", "functionx", "gitopia",
-        "gravity", "haqq", "hippo", "humans", "intento", "jackal", "juno",
-        "kava", "kichain", "kopi", "kujira", "kyve", "loyal", "lum",
-        "lumera", "mantra", "meme", "milkyway", "neutron", "nibiru",
-        "nillion", "noble", "nolus", "nym", "odin", "omniflix", "passage",
-        "persistence", "picasso", "planq", "provenance", "quicksilver",
-        "saga", "shentu", "shido", "sifchain", "sommelier", "source",
-        "stargaze", "stride", "sunrise", "symphony", "tacchain", "teritori",
-        "terra", "umee", "ununifi", "xpla",
-    ].into_iter().collect();
+        "axelar",
+        "babylon",
+        "celestia",
+        "cosmos",
+        "dydx",
+        "initia",
+        "injective",
+        "osmosis",
+        "sei",
+        "akash",
+        "allora",
+        "althea",
+        "andromeda",
+        "archway",
+        "arkeo",
+        "atomone",
+        "aura",
+        "band",
+        "bitcanna",
+        "bitsong",
+        "bitway",
+        "canto",
+        "chain4energy",
+        "cheqd",
+        "chihuahua",
+        "comdex",
+        "crescent",
+        "cronos",
+        "decentr",
+        "dhealth",
+        "dymension",
+        "elys",
+        "evmos",
+        "fetch",
+        "functionx",
+        "gitopia",
+        "gravity",
+        "haqq",
+        "hippo",
+        "humans",
+        "intento",
+        "jackal",
+        "juno",
+        "kava",
+        "kichain",
+        "kopi",
+        "kujira",
+        "kyve",
+        "loyal",
+        "lum",
+        "lumera",
+        "mantra",
+        "meme",
+        "milkyway",
+        "neutron",
+        "nibiru",
+        "nillion",
+        "noble",
+        "nolus",
+        "nym",
+        "odin",
+        "omniflix",
+        "passage",
+        "persistence",
+        "picasso",
+        "planq",
+        "provenance",
+        "quicksilver",
+        "saga",
+        "shentu",
+        "shido",
+        "sifchain",
+        "sommelier",
+        "source",
+        "stargaze",
+        "stride",
+        "sunrise",
+        "symphony",
+        "tacchain",
+        "teritori",
+        "terra",
+        "umee",
+        "ununifi",
+        "xpla",
+    ]
+    .into_iter()
+    .collect();
 
     let chain_lower = chain_name.to_lowercase();
 
     // Check for special mapping first
-    let slug = special_mappings.get(chain_lower.as_str())
+    let slug = special_mappings
+        .get(chain_lower.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| chain_lower.clone());
 
@@ -108,10 +182,7 @@ pub async fn check_endpoint_health(endpoint: &str, is_rpc: bool) -> bool {
     }
 }
 
-pub async fn find_healthy_endpoint(
-    endpoints: &[chain::Rpc],
-    is_rpc: bool,
-) -> Option<String> {
+pub async fn find_healthy_endpoint(endpoints: &[chain::Rpc], is_rpc: bool) -> Option<String> {
     for endpoint in endpoints {
         if check_endpoint_health(&endpoint.address, is_rpc).await {
             return Some(endpoint.address.clone());
@@ -120,9 +191,7 @@ pub async fn find_healthy_endpoint(
     None
 }
 
-pub async fn find_healthy_rest_endpoint(
-    endpoints: &[chain::Rest],
-) -> Option<String> {
+pub async fn find_healthy_rest_endpoint(endpoints: &[chain::Rest]) -> Option<String> {
     for endpoint in endpoints {
         if check_endpoint_health(&endpoint.address, false).await {
             return Some(endpoint.address.clone());
@@ -176,13 +245,15 @@ pub async fn query_ibc_denom(
         if let Some(denom) = json["denom"].as_object() {
             // The alternate format has "base" instead of "base_denom"
             // and "trace" array instead of "path"
-            let base_denom = denom.get("base")
+            let base_denom = denom
+                .get("base")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("Missing base in alternate response"))?;
 
             // Reconstruct path from trace array
             let path = if let Some(trace) = denom.get("trace").and_then(|v| v.as_array()) {
-                trace.iter()
+                trace
+                    .iter()
                     .filter_map(|entry| {
                         let port = entry["port_id"].as_str()?;
                         let channel = entry["channel_id"].as_str()?;
@@ -197,7 +268,9 @@ pub async fn query_ibc_denom(
             return Ok((path, base_denom.to_string()));
         }
 
-        return Err(anyhow::anyhow!("Invalid response format from alternate endpoint"));
+        return Err(anyhow::anyhow!(
+            "Invalid response format from alternate endpoint"
+        ));
     }
 
     let json: Value = response.json().await?;
@@ -205,10 +278,9 @@ pub async fn query_ibc_denom(
 
     // Parse the standard response format
     if let Some(trace) = json["denom_trace"].as_object() {
-        let path = trace.get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let base_denom = trace.get("base_denom")
+        let path = trace.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let base_denom = trace
+            .get("base_denom")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing base_denom in response"))?;
 
@@ -216,7 +288,9 @@ pub async fn query_ibc_denom(
     }
 
     // If denom_trace is not found in the expected format
-    Err(anyhow::anyhow!("Invalid response format: missing denom_trace"))
+    Err(anyhow::anyhow!(
+        "Invalid response format: missing denom_trace"
+    ))
 }
 
 pub async fn query_ibc_denom_with_fallback(
@@ -272,12 +346,19 @@ pub async fn query_ibc_channel_info(
         .to_string();
 
     // Fetch channel data
-    let channel_url = format!("{}/ibc/core/channel/v1/channels/{}/ports/{}", base_url, channel_id, port_id);
+    let channel_url = format!(
+        "{}/ibc/core/channel/v1/channels/{}/ports/{}",
+        base_url, channel_id, port_id
+    );
     log::info!("Fetching channel data from: {}", channel_url);
 
     let response = client.get(&channel_url).send().await?;
     if !response.status().is_success() {
-        return Err(anyhow::anyhow!("Channel {} not found on port {}", channel_id, port_id));
+        return Err(anyhow::anyhow!(
+            "Channel {} not found on port {}",
+            channel_id,
+            port_id
+        ));
     }
     let channel_data: Value = response.json().await?;
 
@@ -292,7 +373,10 @@ pub async fn query_ibc_channel_info(
         .to_string();
 
     // Fetch connection data
-    let connection_url = format!("{}/ibc/core/connection/v1/connections/{}", base_url, connection_id);
+    let connection_url = format!(
+        "{}/ibc/core/connection/v1/connections/{}",
+        base_url, connection_id
+    );
     log::info!("Fetching connection data from: {}", connection_url);
 
     let response = client.get(&connection_url).send().await?;
@@ -317,8 +401,10 @@ pub async fn query_ibc_channel_info(
         .to_string();
 
     // Fetch counterparty chain ID
-    let client_state_url = format!("{}/ibc/core/channel/v1/channels/{}/ports/{}/client_state",
-                                   base_url, channel_id, port_id);
+    let client_state_url = format!(
+        "{}/ibc/core/channel/v1/channels/{}/ports/{}/client_state",
+        base_url, channel_id, port_id
+    );
     log::info!("Fetching counterparty chain ID from: {}", client_state_url);
 
     let response = client.get(&client_state_url).send().await?;
@@ -358,7 +444,10 @@ pub async fn query_ibc_channel_info_with_fallback(
             continue;
         }
 
-        log::info!("Trying REST endpoint for channel info: {}", endpoint.address);
+        log::info!(
+            "Trying REST endpoint for channel info: {}",
+            endpoint.address
+        );
 
         match query_ibc_channel_info(&endpoint.address, channel_id, port_id).await {
             Ok(result) => return Ok(result),
@@ -369,7 +458,8 @@ pub async fn query_ibc_channel_info_with_fallback(
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available for channel query")))
+    Err(last_error
+        .unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available for channel query")))
 }
 
 pub fn extract_channel_from_path(path: &str) -> Option<String> {
@@ -439,8 +529,14 @@ pub async fn query_abci_info(rpc_endpoint: &str) -> Option<AbciInfo> {
 
     Some(AbciInfo {
         version: resp["version"].as_str().unwrap_or("Unknown").to_string(),
-        last_block_height: resp["last_block_height"].as_str().unwrap_or("Unknown").to_string(),
-        last_block_app_hash: resp["last_block_app_hash"].as_str().unwrap_or("Unknown").to_string(),
+        last_block_height: resp["last_block_height"]
+            .as_str()
+            .unwrap_or("Unknown")
+            .to_string(),
+        last_block_app_hash: resp["last_block_app_hash"]
+            .as_str()
+            .unwrap_or("Unknown")
+            .to_string(),
     })
 }
 
@@ -449,6 +545,116 @@ pub async fn query_abci_info(rpc_endpoint: &str) -> Option<AbciInfo> {
 pub struct Balance {
     pub denom: String,
     pub amount: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct OsmosisGaugeIncentive {
+    pub gauge_id: String,
+    pub duration: String,
+    pub incentive_percentage: String,
+    pub coins: Vec<Balance>,
+    pub distributed_coins: Vec<Balance>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OsmosisClIncentive {
+    pub incentive_id: String,
+    pub denom: String,
+    pub remaining_amount: String,
+    pub emission_rate: String,
+    pub start_time: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct OsmosisPoolIncentives {
+    pub gauges: Vec<OsmosisGaugeIncentive>,
+    pub cl_records: Vec<OsmosisClIncentive>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OsmosisTokenPrice {
+    pub name: String,
+    pub symbol: String,
+    pub denom: String,
+    pub quote_symbol: String,
+    pub quote_denom: String,
+    pub price: String,
+}
+
+#[derive(Debug, Clone)]
+struct OsmosisTokenMetadata {
+    name: String,
+    symbol: String,
+    denom: String,
+    preview: bool,
+}
+
+async fn get_json(client: &reqwest::Client, url: &str) -> anyhow::Result<Value> {
+    let response = client.get(url).send().await?;
+    if !response.status().is_success() {
+        return Err(anyhow::anyhow!(
+            "request failed with status {} for {}",
+            response.status(),
+            url
+        ));
+    }
+
+    Ok(response.json().await?)
+}
+
+fn parse_coin_array(value: &Value) -> Vec<Balance> {
+    value
+        .as_array()
+        .map(|coins| {
+            coins
+                .iter()
+                .filter_map(|coin| {
+                    Some(Balance {
+                        denom: coin["denom"].as_str()?.to_string(),
+                        amount: coin["amount"].as_str()?.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn encode_query_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    encoded
+}
+
+fn resolve_token_metadata(metadata: &Value, input: &str) -> Option<OsmosisTokenMetadata> {
+    let needle = input.trim();
+    let mut preview_match = None;
+
+    for token in metadata.as_object()?.values() {
+        let denom = token["coinMinimalDenom"].as_str().unwrap_or_default();
+        let symbol = token["symbol"].as_str().unwrap_or_default();
+
+        if denom.eq_ignore_ascii_case(needle) || symbol.eq_ignore_ascii_case(needle) {
+            let candidate = OsmosisTokenMetadata {
+                name: token["name"].as_str().unwrap_or(symbol).to_string(),
+                symbol: symbol.to_string(),
+                denom: denom.to_string(),
+                preview: token["preview"].as_bool().unwrap_or(false),
+            };
+
+            if !candidate.preview {
+                return Some(candidate);
+            }
+            preview_match = Some(candidate);
+        }
+    }
+
+    preview_match
 }
 
 /// Query wallet balances from chain REST API
@@ -535,7 +741,8 @@ pub async fn query_balances_with_fallback(
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available for balance query")))
+    Err(last_error
+        .unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available for balance query")))
 }
 
 /// Format amount with thousands separators
@@ -563,4 +770,278 @@ pub fn truncate_ibc_hash(hash: &str) -> String {
     } else {
         hash.to_string()
     }
+}
+
+pub async fn query_osmosis_pool_info(
+    endpoints: &[chain::Rest],
+    pool_id: &str,
+) -> anyhow::Result<Value> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let paths = [
+        format!("/osmosis/poolmanager/v1beta1/pools/{pool_id}"),
+        format!("/osmosis/gamm/v1beta1/pools/{pool_id}"),
+    ];
+    let max_attempts = 3.min(endpoints.len());
+    let mut last_error = None;
+
+    for endpoint in endpoints.iter().take(max_attempts) {
+        if endpoint.address.starts_with("http://") || endpoint.address.is_empty() {
+            continue;
+        }
+
+        for path in &paths {
+            let url = format!("{}{}", endpoint.address.trim_end_matches('/'), path);
+            match get_json(&client, &url).await {
+                Ok(json) => {
+                    if let Some(pool) = json.get("pool") {
+                        return Ok(pool.clone());
+                    }
+                    last_error = Some(anyhow::anyhow!("pool response missing pool object"));
+                }
+                Err(e) => last_error = Some(e),
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No Osmosis REST pool endpoint available")))
+}
+
+pub async fn query_osmosis_pool_incentives(
+    endpoints: &[chain::Rest],
+    pool_id: &str,
+) -> anyhow::Result<OsmosisPoolIncentives> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let max_attempts = 3.min(endpoints.len());
+    let mut last_error = None;
+
+    for endpoint in endpoints.iter().take(max_attempts) {
+        if endpoint.address.starts_with("http://") || endpoint.address.is_empty() {
+            continue;
+        }
+
+        let base = endpoint.address.trim_end_matches('/');
+        let gauge_url = format!("{base}/osmosis/pool-incentives/v1beta1/gauge-ids/{pool_id}");
+        let gauge_ids = match get_json(&client, &gauge_url).await {
+            Ok(json) => json,
+            Err(e) => {
+                last_error = Some(e);
+                continue;
+            }
+        };
+
+        let mut gauges = Vec::new();
+        for gauge in gauge_ids["gauge_ids_with_duration"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(8)
+        {
+            let Some(gauge_id) = gauge["gauge_id"].as_str() else {
+                continue;
+            };
+            let detail_url = format!("{base}/osmosis/incentives/v1beta1/gauge_by_id/{gauge_id}");
+            let detail = get_json(&client, &detail_url).await.unwrap_or_default();
+            let gauge_detail = &detail["gauge"];
+
+            gauges.push(OsmosisGaugeIncentive {
+                gauge_id: gauge_id.to_string(),
+                duration: gauge["duration"].as_str().unwrap_or("unknown").to_string(),
+                incentive_percentage: gauge["gauge_incentive_percentage"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_string(),
+                coins: parse_coin_array(&gauge_detail["coins"]),
+                distributed_coins: parse_coin_array(&gauge_detail["distributed_coins"]),
+            });
+        }
+
+        let cl_url = format!(
+            "{base}/osmosis/concentratedliquidity/v1beta1/incentive_records?pool_id={pool_id}"
+        );
+        let cl_json = get_json(&client, &cl_url).await.unwrap_or_default();
+        let cl_records = cl_json["incentive_records"]
+            .as_array()
+            .map(|records| {
+                records
+                    .iter()
+                    .take(8)
+                    .filter_map(|record| {
+                        let body = &record["incentive_record_body"];
+                        let coin = &body["remaining_coin"];
+                        Some(OsmosisClIncentive {
+                            incentive_id: record["incentive_id"].as_str()?.to_string(),
+                            denom: coin["denom"].as_str()?.to_string(),
+                            remaining_amount: coin["amount"].as_str()?.to_string(),
+                            emission_rate: body["emission_rate"].as_str()?.to_string(),
+                            start_time: body["start_time"]
+                                .as_str()
+                                .unwrap_or("unknown")
+                                .to_string(),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        return Ok(OsmosisPoolIncentives { gauges, cl_records });
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No Osmosis incentive endpoint available")))
+}
+
+pub async fn query_osmosis_token_price(token: &str) -> anyhow::Result<OsmosisTokenPrice> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let metadata = get_json(&client, "https://sqs.osmosis.zone/tokens/metadata").await?;
+    let token_metadata = resolve_token_metadata(&metadata, token).unwrap_or_else(|| {
+        let trimmed = token.trim().to_string();
+        OsmosisTokenMetadata {
+            name: trimmed.clone(),
+            symbol: trimmed.clone(),
+            denom: trimmed,
+            preview: false,
+        }
+    });
+
+    let price_url = format!(
+        "https://sqs.osmosis.zone/tokens/prices?base={}",
+        encode_query_component(&token_metadata.denom)
+    );
+    let price_json = get_json(&client, &price_url).await?;
+    let quotes = price_json
+        .get(&token_metadata.denom)
+        .and_then(|v| v.as_object())
+        .ok_or_else(|| anyhow::anyhow!("No price quote found for {}", token_metadata.symbol))?;
+    let (quote_denom, price) = quotes
+        .iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No price quote found for {}", token_metadata.symbol))?;
+    let quote_metadata = resolve_token_metadata(&metadata, quote_denom);
+
+    Ok(OsmosisTokenPrice {
+        name: token_metadata.name,
+        symbol: token_metadata.symbol,
+        denom: token_metadata.denom,
+        quote_symbol: quote_metadata
+            .as_ref()
+            .map(|m| m.symbol.clone())
+            .unwrap_or_else(|| truncate_ibc_hash(quote_denom)),
+        quote_denom: quote_denom.to_string(),
+        price: price.as_str().unwrap_or("unknown").to_string(),
+    })
+}
+
+fn short_pool_type(pool_type: &str) -> &str {
+    pool_type.rsplit('.').next().unwrap_or(pool_type)
+}
+
+pub fn format_osmosis_pool_info(pool_id: &str, pool: &Value) -> String {
+    let pool_type = pool["@type"].as_str().unwrap_or("unknown");
+    let mut message = format!(
+        "Osmosis Pool {pool_id}\nType: {}\n",
+        short_pool_type(pool_type)
+    );
+
+    if let Some(address) = pool["address"].as_str() {
+        message.push_str(&format!("Address: {address}\n"));
+    }
+    if let Some(swap_fee) = pool["pool_params"]["swap_fee"].as_str() {
+        message.push_str(&format!("Swap Fee: {swap_fee}\n"));
+    }
+    if let Some(total_shares) = pool["total_shares"]["amount"].as_str() {
+        message.push_str(&format!("Total Shares: {}\n", format_amount(total_shares)));
+    }
+
+    if let Some(assets) = pool["pool_assets"].as_array() {
+        message.push_str("\nAssets:\n");
+        for asset in assets.iter().take(8) {
+            let token = &asset["token"];
+            let denom = token["denom"].as_str().unwrap_or("unknown");
+            let amount = token["amount"].as_str().unwrap_or("0");
+            let weight = asset["weight"].as_str().unwrap_or("unknown");
+            message.push_str(&format!(
+                "- {}: {} (weight {})\n",
+                truncate_ibc_hash(denom),
+                format_amount(amount),
+                weight
+            ));
+        }
+    } else if let Some(liquidity) = pool["current_tick_liquidity"].as_str() {
+        message.push_str(&format!("Current Tick Liquidity: {liquidity}\n"));
+    }
+
+    message
+}
+
+fn format_coin_lines(coins: &[Balance]) -> String {
+    if coins.is_empty() {
+        return "none".to_string();
+    }
+
+    coins
+        .iter()
+        .map(|coin| {
+            format!(
+                "{} {}",
+                format_amount(&coin.amount),
+                truncate_ibc_hash(&coin.denom)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+pub fn format_osmosis_pool_incentives(pool_id: &str, incentives: &OsmosisPoolIncentives) -> String {
+    if incentives.gauges.is_empty() && incentives.cl_records.is_empty() {
+        return format!("No active incentives found for Osmosis pool {pool_id}.");
+    }
+
+    let mut message = format!("Osmosis Pool {pool_id} Incentives\n");
+
+    if !incentives.gauges.is_empty() {
+        message.push_str("\nGauge Incentives:\n");
+        for gauge in &incentives.gauges {
+            message.push_str(&format!(
+                "- Gauge {} ({}): {}\n  remaining: {}\n  distributed: {}\n",
+                gauge.gauge_id,
+                gauge.duration,
+                gauge.incentive_percentage,
+                format_coin_lines(&gauge.coins),
+                format_coin_lines(&gauge.distributed_coins)
+            ));
+        }
+    }
+
+    if !incentives.cl_records.is_empty() {
+        message.push_str("\nConcentrated Liquidity Records:\n");
+        for record in &incentives.cl_records {
+            message.push_str(&format!(
+                "- Incentive {}: {} {} remaining, emission {}, starts {}\n",
+                record.incentive_id,
+                format_amount(&record.remaining_amount),
+                truncate_ibc_hash(&record.denom),
+                record.emission_rate,
+                record.start_time
+            ));
+        }
+    }
+
+    message
+}
+
+pub fn format_osmosis_token_price(price: &OsmosisTokenPrice) -> String {
+    format!(
+        "Osmosis Price\nToken: {} ({})\nDenom: {}\nPrice: {} {}\nQuote Denom: {}",
+        price.name,
+        price.symbol,
+        truncate_ibc_hash(&price.denom),
+        price.price,
+        price.quote_symbol,
+        truncate_ibc_hash(&price.quote_denom)
+    )
 }

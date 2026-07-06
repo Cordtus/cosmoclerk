@@ -1,16 +1,20 @@
 use crate::{
     bot::{MyDialogue, State},
     cache::RegistryCache,
-    utils::{escape_markdown, find_healthy_endpoint, find_healthy_rest_endpoint,
-            query_ibc_denom, query_ibc_denom_with_fallback, query_ibc_channel_info_with_fallback,
-            extract_channel_from_path, format_channel_input, query_abci_info,
-            get_polkachu_installation_url, query_balances_with_fallback, format_amount,
-            truncate_ibc_hash, PAGE_SIZE},
+    utils::{
+        escape_markdown, extract_channel_from_path, find_healthy_endpoint,
+        find_healthy_rest_endpoint, format_amount, format_channel_input,
+        format_osmosis_pool_incentives, format_osmosis_pool_info, format_osmosis_token_price,
+        get_polkachu_installation_url, query_abci_info, query_balances_with_fallback,
+        query_ibc_channel_info_with_fallback, query_ibc_denom, query_ibc_denom_with_fallback,
+        query_osmosis_pool_incentives, query_osmosis_pool_info, query_osmosis_token_price,
+        truncate_ibc_hash, PAGE_SIZE,
+    },
 };
 use std::sync::Arc;
 use teloxide::{
     prelude::*,
-    types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, MessageId},
+    types::{InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ParseMode},
 };
 
 pub async fn start(
@@ -19,12 +23,14 @@ pub async fn start(
     cache: Arc<RegistryCache>,
     msg: Message,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    dialogue.update(State::SelectingChain { 
-        page: 0, 
-        is_testnet: false, 
-        message_id: None, 
-        last_selected_chain: None 
-    }).await?;
+    dialogue
+        .update(State::SelectingChain {
+            page: 0,
+            is_testnet: false,
+            message_id: None,
+            last_selected_chain: None,
+        })
+        .await?;
     show_chain_selection(&bot, &msg, &cache, 0, false, None).await?;
     Ok(())
 }
@@ -39,10 +45,7 @@ pub async fn restart(
     start(bot, dialogue, cache, msg).await
 }
 
-pub async fn help(
-    bot: Bot,
-    msg: Message,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn help(bot: Bot, msg: Message) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     bot.send_message(
         msg.chat.id,
         "CosmoClerk Bot - Cosmos Chain Registry Explorer\n\n\
@@ -62,12 +65,14 @@ pub async fn show_testnets(
     cache: Arc<RegistryCache>,
     msg: Message,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    dialogue.update(State::SelectingChain { 
-        page: 0, 
-        is_testnet: true, 
-        message_id: None,
-        last_selected_chain: None 
-    }).await?;
+    dialogue
+        .update(State::SelectingChain {
+            page: 0,
+            is_testnet: true,
+            message_id: None,
+            last_selected_chain: None,
+        })
+        .await?;
     show_chain_selection(&bot, &msg, &cache, 0, true, None).await?;
     Ok(())
 }
@@ -78,12 +83,14 @@ pub async fn show_mainnets(
     cache: Arc<RegistryCache>,
     msg: Message,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    dialogue.update(State::SelectingChain { 
-        page: 0, 
-        is_testnet: false, 
-        message_id: None,
-        last_selected_chain: None 
-    }).await?;
+    dialogue
+        .update(State::SelectingChain {
+            page: 0,
+            is_testnet: false,
+            message_id: None,
+            last_selected_chain: None,
+        })
+        .await?;
     show_chain_selection(&bot, &msg, &cache, 0, false, None).await?;
     Ok(())
 }
@@ -102,18 +109,18 @@ async fn show_chain_selection(
         cache.list_chains().await?
     };
 
-    let total_pages = (filtered_chains.len() + PAGE_SIZE - 1) / PAGE_SIZE;
+    let total_pages = filtered_chains.len().div_ceil(PAGE_SIZE);
     let start = page * PAGE_SIZE;
     let end = (start + PAGE_SIZE).min(filtered_chains.len());
-    
+
     let page_chains = &filtered_chains[start..end];
-    
+
     let mut buttons = vec![];
     for chunk in page_chains.chunks(3) {
         let row: Vec<InlineKeyboardButton> = chunk
             .iter()
             .map(|chain| {
-                let display_name = if last_selected.map_or(false, |s| s == chain) {
+                let display_name = if last_selected == Some(chain) {
                     format!("🔴 {}", chain)
                 } else {
                     chain.clone()
@@ -123,34 +130,41 @@ async fn show_chain_selection(
             .collect();
         buttons.push(row);
     }
-    
+
     // Navigation buttons
     let mut nav_buttons = vec![];
     if page > 0 {
-        nav_buttons.push(InlineKeyboardButton::callback("← Previous", format!("page:{}", page - 1)));
+        nav_buttons.push(InlineKeyboardButton::callback(
+            "← Previous",
+            format!("page:{}", page - 1),
+        ));
     }
     if page < total_pages - 1 {
-        nav_buttons.push(InlineKeyboardButton::callback("Next →", format!("page:{}", page + 1)));
+        nav_buttons.push(InlineKeyboardButton::callback(
+            "Next →",
+            format!("page:{}", page + 1),
+        ));
     }
     if !nav_buttons.is_empty() {
         buttons.push(nav_buttons);
     }
-    
+
     // Testnet toggle
     buttons.push(vec![InlineKeyboardButton::callback(
-        if is_testnet { "Show Mainnets" } else { "Show Testnets" },
+        if is_testnet {
+            "Show Mainnets"
+        } else {
+            "Show Testnets"
+        },
         format!("toggle_testnet:{}", !is_testnet),
     )]);
-    
+
     let keyboard = InlineKeyboardMarkup::new(buttons);
-    
-    bot.send_message(
-        msg.chat.id,
-        "Type a chain name, or select from menu:",
-    )
-    .reply_markup(keyboard)
-    .await?;
-    
+
+    bot.send_message(msg.chat.id, "Type a chain name, or select from menu:")
+        .reply_markup(keyboard)
+        .await?;
+
     Ok(())
 }
 
@@ -159,7 +173,12 @@ pub async fn handle_chain_selection(
     dialogue: MyDialogue,
     cache: Arc<RegistryCache>,
     q: CallbackQuery,
-    (_page, is_testnet, _message_id, last_selected_chain): (usize, bool, Option<teloxide::types::MessageId>, Option<String>),
+    (_page, is_testnet, _message_id, last_selected_chain): (
+        usize,
+        bool,
+        Option<teloxide::types::MessageId>,
+        Option<String>,
+    ),
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(ref data) = q.data {
         if let Some(chain) = data.strip_prefix("select:") {
@@ -171,33 +190,47 @@ pub async fn handle_chain_selection(
                 }
             }
             let new_menu_id = show_chain_menu(&bot, &q, &chain).await?;
-            dialogue.update(State::ChainSelected { 
-                chain: chain.clone(), 
-                message_id: Some(new_menu_id) 
-            }).await?;
+            dialogue
+                .update(State::ChainSelected {
+                    chain: chain.clone(),
+                    message_id: Some(new_menu_id),
+                })
+                .await?;
         } else if let Some(page_str) = data.strip_prefix("page:") {
             let new_page: usize = page_str.parse()?;
             let msg_id = q.message.as_ref().map(|m| m.id);
-            dialogue.update(State::SelectingChain { 
-                page: new_page, 
+            dialogue
+                .update(State::SelectingChain {
+                    page: new_page,
+                    is_testnet,
+                    message_id: msg_id,
+                    last_selected_chain: last_selected_chain.clone(),
+                })
+                .await?;
+            update_chain_selection(
+                &bot,
+                &q,
+                &cache,
+                new_page,
                 is_testnet,
-                message_id: msg_id,
-                last_selected_chain: last_selected_chain.clone()
-            }).await?;
-            update_chain_selection(&bot, &q, &cache, new_page, is_testnet, last_selected_chain.as_ref()).await?;
+                last_selected_chain.as_ref(),
+            )
+            .await?;
         } else if let Some(testnet_str) = data.strip_prefix("toggle_testnet:") {
             let new_testnet: bool = testnet_str.parse()?;
             let msg_id = q.message.as_ref().map(|m| m.id);
-            dialogue.update(State::SelectingChain { 
-                page: 0, 
-                is_testnet: new_testnet,
-                message_id: msg_id,
-                last_selected_chain: None
-            }).await?;
+            dialogue
+                .update(State::SelectingChain {
+                    page: 0,
+                    is_testnet: new_testnet,
+                    message_id: msg_id,
+                    last_selected_chain: None,
+                })
+                .await?;
             update_chain_selection(&bot, &q, &cache, 0, new_testnet, None).await?;
         }
     }
-    
+
     bot.answer_callback_query(q.id).await?;
     Ok(())
 }
@@ -216,18 +249,18 @@ async fn update_chain_selection(
         cache.list_chains().await?
     };
 
-    let total_pages = (filtered_chains.len() + PAGE_SIZE - 1) / PAGE_SIZE;
+    let total_pages = filtered_chains.len().div_ceil(PAGE_SIZE);
     let start = page * PAGE_SIZE;
     let end = (start + PAGE_SIZE).min(filtered_chains.len());
-    
+
     let page_chains = &filtered_chains[start..end];
-    
+
     let mut buttons = vec![];
     for chunk in page_chains.chunks(3) {
         let row: Vec<InlineKeyboardButton> = chunk
             .iter()
             .map(|chain| {
-                let display_name = if last_selected.map_or(false, |s| s == chain) {
+                let display_name = if last_selected == Some(chain) {
                     format!("🔴 {}", chain)
                 } else {
                     chain.clone()
@@ -237,35 +270,50 @@ async fn update_chain_selection(
             .collect();
         buttons.push(row);
     }
-    
+
     // Navigation buttons
     let mut nav_buttons = vec![];
     if page > 0 {
-        nav_buttons.push(InlineKeyboardButton::callback("← Previous", format!("page:{}", page - 1)));
+        nav_buttons.push(InlineKeyboardButton::callback(
+            "← Previous",
+            format!("page:{}", page - 1),
+        ));
     }
     if page < total_pages - 1 {
-        nav_buttons.push(InlineKeyboardButton::callback("Next →", format!("page:{}", page + 1)));
+        nav_buttons.push(InlineKeyboardButton::callback(
+            "Next →",
+            format!("page:{}", page + 1),
+        ));
     }
     if !nav_buttons.is_empty() {
         buttons.push(nav_buttons);
     }
-    
+
     // Testnet toggle
     buttons.push(vec![InlineKeyboardButton::callback(
-        if is_testnet { "Show Mainnets" } else { "Show Testnets" },
+        if is_testnet {
+            "Show Mainnets"
+        } else {
+            "Show Testnets"
+        },
         format!("toggle_testnet:{}", !is_testnet),
     )]);
-    
+
     let keyboard = InlineKeyboardMarkup::new(buttons);
-    
+
     edit_callback_message_with_markup(
         bot,
         q,
-        if is_testnet { "Select a testnet:" } else { "Select a chain:" }.to_string(),
+        if is_testnet {
+            "Select a testnet:"
+        } else {
+            "Select a chain:"
+        }
+        .to_string(),
         keyboard,
     )
     .await?;
-    
+
     Ok(())
 }
 
@@ -296,6 +344,21 @@ async fn edit_callback_message_with_markup(
     Ok(())
 }
 
+fn is_osmosis_mainnet(chain: &str) -> bool {
+    chain.eq_ignore_ascii_case("osmosis")
+}
+
+fn push_osmosis_buttons(buttons: &mut Vec<Vec<InlineKeyboardButton>>) {
+    buttons.push(vec![
+        InlineKeyboardButton::callback("8. LP Incentives", "action:pool_incentives"),
+        InlineKeyboardButton::callback("9. Pool Info", "action:pool_info"),
+    ]);
+    buttons.push(vec![InlineKeyboardButton::callback(
+        "10. Price Info",
+        "action:price_info",
+    )]);
+}
+
 async fn show_chain_menu(
     bot: &Bot,
     q: &CallbackQuery,
@@ -318,28 +381,39 @@ async fn show_chain_menu(
             InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
             InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
         ]);
-        buttons.push(vec![
-            InlineKeyboardButton::callback("7. Check Balance", "action:check_balance"),
-        ]);
+        buttons.push(vec![InlineKeyboardButton::callback(
+            "7. Check Balance",
+            "action:check_balance",
+        )]);
+        if is_osmosis_mainnet(chain) {
+            push_osmosis_buttons(&mut buttons);
+        }
     }
 
     // Add installation guide link if available on Polkachu
     if let Some(install_url) = get_polkachu_installation_url(chain) {
-        buttons.push(vec![InlineKeyboardButton::url("Node Installation Guide", install_url.parse().unwrap())]);
+        buttons.push(vec![InlineKeyboardButton::url(
+            "Node Installation Guide",
+            install_url.parse().unwrap(),
+        )]);
     }
 
-    buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
+    buttons.push(vec![InlineKeyboardButton::callback(
+        "← Back",
+        "back:chains",
+    )]);
 
     let keyboard = InlineKeyboardMarkup::new(buttons);
 
     // Send as a new message instead of editing
     if let Some(Message { chat, .. }) = &q.message {
-        let sent_msg = bot.send_message(chat.id, format!("Selected: {}\n\nChoose an action:", chain))
+        let sent_msg = bot
+            .send_message(chat.id, format!("Selected: {}\n\nChoose an action:", chain))
             .reply_markup(keyboard)
             .await?;
         return Ok(sent_msg.id);
     }
-    
+
     Err("No message in callback query".into())
 }
 
@@ -350,16 +424,13 @@ async fn delete_message_with_effect(
     message_id: MessageId,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // First update the message with a vaporizing effect
-    let effects = vec![
-        "💨 ᵈⁱˢˢᵒˡᵛⁱⁿᵍ...",
-        "✨ ...",
-    ];
-    
+    let effects = vec!["💨 ᵈⁱˢˢᵒˡᵛⁱⁿᵍ...", "✨ ..."];
+
     for effect in effects {
         bot.edit_message_text(chat_id, message_id, effect).await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
     }
-    
+
     // Then delete the message
     bot.delete_message(chat_id, message_id).await?;
     Ok(())
@@ -388,30 +459,40 @@ async fn send_chain_menu(
             InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
             InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
         ]);
-        buttons.push(vec![
-            InlineKeyboardButton::callback("7. Check Balance", "action:check_balance"),
-        ]);
+        buttons.push(vec![InlineKeyboardButton::callback(
+            "7. Check Balance",
+            "action:check_balance",
+        )]);
+        if is_osmosis_mainnet(chain) {
+            push_osmosis_buttons(&mut buttons);
+        }
     }
 
     // Add installation guide link if available on Polkachu
     if let Some(install_url) = get_polkachu_installation_url(chain) {
-        buttons.push(vec![InlineKeyboardButton::url("Node Installation Guide", install_url.parse().unwrap())]);
+        buttons.push(vec![InlineKeyboardButton::url(
+            "Node Installation Guide",
+            install_url.parse().unwrap(),
+        )]);
     }
 
-    buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
+    buttons.push(vec![InlineKeyboardButton::callback(
+        "← Back",
+        "back:chains",
+    )]);
 
     let keyboard = InlineKeyboardMarkup::new(buttons);
 
-    let sent_msg = bot.send_message(
-        msg.chat.id,
-        format!("Selected: {}\n\nChoose an action:", chain),
-    )
-    .reply_markup(keyboard)
-    .await?;
+    let sent_msg = bot
+        .send_message(
+            msg.chat.id,
+            format!("Selected: {}\n\nChoose an action:", chain),
+        )
+        .reply_markup(keyboard)
+        .await?;
 
     Ok(sent_msg.id)
 }
-
 
 pub async fn handle_chain_action(
     bot: Bot,
@@ -431,10 +512,12 @@ pub async fn handle_chain_action(
                 show_chain_info(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
                 let new_menu_id = show_chain_menu(&bot, &q, &chain).await?;
-                dialogue.update(State::ChainSelected { 
-                    chain: chain.clone(), 
-                    message_id: Some(new_menu_id) 
-                }).await?;
+                dialogue
+                    .update(State::ChainSelected {
+                        chain: chain.clone(),
+                        message_id: Some(new_menu_id),
+                    })
+                    .await?;
             }
             "action:peer_nodes" => {
                 // Delete the menu with effect
@@ -445,10 +528,12 @@ pub async fn handle_chain_action(
                 show_peer_nodes(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
                 let new_menu_id = show_chain_menu(&bot, &q, &chain).await?;
-                dialogue.update(State::ChainSelected { 
-                    chain: chain.clone(), 
-                    message_id: Some(new_menu_id) 
-                }).await?;
+                dialogue
+                    .update(State::ChainSelected {
+                        chain: chain.clone(),
+                        message_id: Some(new_menu_id),
+                    })
+                    .await?;
             }
             "action:endpoints" => {
                 // Delete the menu with effect
@@ -459,10 +544,12 @@ pub async fn handle_chain_action(
                 show_endpoints(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
                 let new_menu_id = show_chain_menu(&bot, &q, &chain).await?;
-                dialogue.update(State::ChainSelected { 
-                    chain: chain.clone(), 
-                    message_id: Some(new_menu_id) 
-                }).await?;
+                dialogue
+                    .update(State::ChainSelected {
+                        chain: chain.clone(),
+                        message_id: Some(new_menu_id),
+                    })
+                    .await?;
             }
             "action:explorers" => {
                 // Delete the menu with effect
@@ -473,17 +560,24 @@ pub async fn handle_chain_action(
                 show_explorers(&bot, &q, &cache, &chain).await?;
                 // Show menu again after displaying info
                 let new_menu_id = show_chain_menu(&bot, &q, &chain).await?;
-                dialogue.update(State::ChainSelected { 
-                    chain: chain.clone(), 
-                    message_id: Some(new_menu_id) 
-                }).await?;
+                dialogue
+                    .update(State::ChainSelected {
+                        chain: chain.clone(),
+                        message_id: Some(new_menu_id),
+                    })
+                    .await?;
             }
             "action:ibc_id" => {
                 // Delete the menu with effect
                 if let Some(Message { id, chat, .. }) = &q.message {
                     delete_message_with_effect(&bot, chat.id, *id).await?;
                     let msg_id = q.message.as_ref().map(|m| m.id);
-                    dialogue.update(State::AwaitingIbcDenom { chain, message_id: msg_id }).await?;
+                    dialogue
+                        .update(State::AwaitingIbcDenom {
+                            chain,
+                            message_id: msg_id,
+                        })
+                        .await?;
                     bot.send_message(chat.id, "Enter IBC denom (e.g., ibc/ABC123...):")
                         .await?;
                 }
@@ -493,7 +587,12 @@ pub async fn handle_chain_action(
                 if let Some(Message { id, chat, .. }) = &q.message {
                     delete_message_with_effect(&bot, chat.id, *id).await?;
                     let msg_id = q.message.as_ref().map(|m| m.id);
-                    dialogue.update(State::AwaitingIbcChannel { chain, message_id: msg_id }).await?;
+                    dialogue
+                        .update(State::AwaitingIbcChannel {
+                            chain,
+                            message_id: msg_id,
+                        })
+                        .await?;
                     bot.send_message(chat.id, "Enter IBC channel (e.g., 0 or channel-0):\nOptionally add port (e.g., channel-0 transfer):")
                         .await?;
                 }
@@ -503,26 +602,90 @@ pub async fn handle_chain_action(
                 if let Some(Message { id, chat, .. }) = &q.message {
                     delete_message_with_effect(&bot, chat.id, *id).await?;
                     let msg_id = q.message.as_ref().map(|m| m.id);
-                    dialogue.update(State::AwaitingWalletAddress { chain, message_id: msg_id }).await?;
+                    dialogue
+                        .update(State::AwaitingWalletAddress {
+                            chain,
+                            message_id: msg_id,
+                        })
+                        .await?;
                     bot.send_message(chat.id, "Enter wallet address to check balance:")
                         .await?;
+                }
+            }
+            "action:pool_incentives" => {
+                if let Some(Message { id, chat, .. }) = &q.message {
+                    delete_message_with_effect(&bot, chat.id, *id).await?;
+                    if is_osmosis_mainnet(&chain) {
+                        let msg_id = q.message.as_ref().map(|m| m.id);
+                        dialogue
+                            .update(State::AwaitingOsmosisPoolIncentives {
+                                chain,
+                                message_id: msg_id,
+                            })
+                            .await?;
+                        bot.send_message(chat.id, "Enter Osmosis pool ID for LP incentives:")
+                            .await?;
+                    } else {
+                        bot.send_message(chat.id, "LP incentives are only available for Osmosis.")
+                            .await?;
+                    }
+                }
+            }
+            "action:pool_info" => {
+                if let Some(Message { id, chat, .. }) = &q.message {
+                    delete_message_with_effect(&bot, chat.id, *id).await?;
+                    if is_osmosis_mainnet(&chain) {
+                        let msg_id = q.message.as_ref().map(|m| m.id);
+                        dialogue
+                            .update(State::AwaitingOsmosisPoolInfo {
+                                chain,
+                                message_id: msg_id,
+                            })
+                            .await?;
+                        bot.send_message(chat.id, "Enter Osmosis pool ID for pool info:")
+                            .await?;
+                    } else {
+                        bot.send_message(chat.id, "Pool info is only available for Osmosis.")
+                            .await?;
+                    }
+                }
+            }
+            "action:price_info" => {
+                if let Some(Message { id, chat, .. }) = &q.message {
+                    delete_message_with_effect(&bot, chat.id, *id).await?;
+                    if is_osmosis_mainnet(&chain) {
+                        let msg_id = q.message.as_ref().map(|m| m.id);
+                        dialogue
+                            .update(State::AwaitingOsmosisTokenTicker {
+                                chain,
+                                message_id: msg_id,
+                            })
+                            .await?;
+                        bot.send_message(chat.id, "Enter Osmosis token symbol or base denom:")
+                            .await?;
+                    } else {
+                        bot.send_message(chat.id, "Price info is only available for Osmosis.")
+                            .await?;
+                    }
                 }
             }
             "back:chains" => {
                 // No need to delete - update_chain_selection will edit the existing message
                 let msg_id = q.message.as_ref().map(|m| m.id);
-                dialogue.update(State::SelectingChain { 
-                    page: 0, 
-                    is_testnet: false,
-                    message_id: msg_id,
-                    last_selected_chain: Some(chain.clone())
-                }).await?;
+                dialogue
+                    .update(State::SelectingChain {
+                        page: 0,
+                        is_testnet: false,
+                        message_id: msg_id,
+                        last_selected_chain: Some(chain.clone()),
+                    })
+                    .await?;
                 update_chain_selection(&bot, &q, &cache, 0, false, Some(&chain)).await?;
             }
             _ => {}
         }
     }
-    
+
     bot.answer_callback_query(q.id).await?;
     Ok(())
 }
@@ -535,7 +698,7 @@ async fn show_chain_info(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let chain_data = cache.get_chain(chain).await?;
     let assets_data = cache.get_assets(chain).await?;
-    
+
     if let (Some(chain_info), Some(assets)) = (chain_data, assets_data) {
         let base_denom = chain_info
             .staking
@@ -617,7 +780,7 @@ async fn show_chain_info(
     } else {
         send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
-    
+
     Ok(())
 }
 
@@ -628,10 +791,10 @@ async fn show_peer_nodes(
     chain: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let chain_data = cache.get_chain(chain).await?;
-    
+
     if let Some(chain_info) = chain_data {
         let mut message = String::from("*Seed Nodes*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n");
-        
+
         for seed in chain_info.peers.seeds.iter().take(5) {
             let provider = seed.provider.as_deref().unwrap_or("unknown");
             message.push_str(&format!(
@@ -641,9 +804,9 @@ async fn show_peer_nodes(
                 escape_markdown(&seed.address)
             ));
         }
-        
+
         message.push_str("\n*Persistent Peers*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n");
-        
+
         for peer in chain_info.peers.persistent_peers.iter().take(5) {
             message.push_str(&format!(
                 "id: `{}`\nURL: `{}`\n\n",
@@ -651,7 +814,7 @@ async fn show_peer_nodes(
                 escape_markdown(&peer.address)
             ));
         }
-        
+
         // Send as new message instead of editing
         if let Some(Message { chat, .. }) = &q.message {
             bot.send_message(chat.id, message)
@@ -661,7 +824,7 @@ async fn show_peer_nodes(
     } else {
         send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
-    
+
     Ok(())
 }
 
@@ -672,10 +835,10 @@ async fn show_endpoints(
     chain: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let chain_data = cache.get_chain(chain).await?;
-    
+
     if let Some(chain_info) = chain_data {
         let mut message = String::from("*RPC*\n\\-\\-\\-\n");
-        
+
         for rpc in chain_info.apis.rpc.iter().take(5) {
             let provider = rpc.provider.as_deref().unwrap_or("unknown");
             message.push_str(&format!(
@@ -684,9 +847,9 @@ async fn show_endpoints(
                 escape_markdown(&rpc.address)
             ));
         }
-        
+
         message.push_str("\n*REST*\n\\-\\-\\-\\-\n");
-        
+
         for rest in chain_info.apis.rest.iter().take(5) {
             let provider = rest.provider.as_deref().unwrap_or("unknown");
             message.push_str(&format!(
@@ -695,7 +858,7 @@ async fn show_endpoints(
                 escape_markdown(&rest.address)
             ));
         }
-        
+
         message.push_str("\n*GRPC*\n\\-\\-\\-\\-\n");
 
         for grpc in chain_info.apis.grpc.iter().take(5) {
@@ -729,7 +892,7 @@ async fn show_endpoints(
     } else {
         send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
-    
+
     Ok(())
 }
 
@@ -740,10 +903,11 @@ async fn show_explorers(
     chain: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let chain_data = cache.get_chain(chain).await?;
-    
+
     if let Some(chain_info) = chain_data {
-        let mut message = String::from("*Block Explorers*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n\n");
-        
+        let mut message =
+            String::from("*Block Explorers*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n\n");
+
         for explorer in &chain_info.explorers {
             message.push_str(&format!(
                 "*{}*:\n`{}`\n\n",
@@ -751,7 +915,7 @@ async fn show_explorers(
                 escape_markdown(&explorer.url)
             ));
         }
-        
+
         // Send as new message instead of editing
         if let Some(Message { chat, .. }) = &q.message {
             bot.send_message(chat.id, message)
@@ -761,7 +925,7 @@ async fn show_explorers(
     } else {
         send_callback_message(bot, q, format!("Chain {} not found", chain)).await?;
     }
-    
+
     Ok(())
 }
 
@@ -774,30 +938,44 @@ pub async fn handle_ibc_denom(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(text) = msg.text() {
         if let Some(ibc_hash) = text.strip_prefix("ibc/") {
-            
             // Get chain info to find REST endpoint
             if let Some(chain_info) = cache.get_chain(&chain).await? {
                 match query_ibc_denom_with_fallback(&chain_info.apis.rest, ibc_hash).await {
                     Ok((path, base_denom)) => {
                         let mut message = if !path.is_empty() {
-                            format!("✅ IBC Denom Trace Found:\n\nPath: {}\nBase Denomination: {}", path, base_denom)
+                            format!(
+                                "✅ IBC Denom Trace Found:\n\nPath: {}\nBase Denomination: {}",
+                                path, base_denom
+                            )
                         } else {
-                            format!("✅ IBC Denom Trace Found:\n\nBase Denomination: {}", base_denom)
+                            format!(
+                                "✅ IBC Denom Trace Found:\n\nBase Denomination: {}",
+                                base_denom
+                            )
                         };
 
                         // Try to extract channel from path and fetch route info
                         if !path.is_empty() {
                             if let Some(channel) = extract_channel_from_path(&path) {
-                                match query_ibc_channel_info_with_fallback(&chain_info.apis.rest, &channel, "transfer").await {
+                                match query_ibc_channel_info_with_fallback(
+                                    &chain_info.apis.rest,
+                                    &channel,
+                                    "transfer",
+                                )
+                                .await
+                                {
                                     Ok(info) => {
                                         message.push_str(&format!(
                                             "\n\n📍 **Source Chain:** {}\n(via {})",
-                                            info.counterparty_chain_id,
-                                            channel
+                                            info.counterparty_chain_id, channel
                                         ));
                                     }
                                     Err(e) => {
-                                        log::warn!("Could not fetch channel info for {}: {}", channel, e);
+                                        log::warn!(
+                                            "Could not fetch channel info for {}: {}",
+                                            channel,
+                                            e
+                                        );
                                     }
                                 }
                             }
@@ -817,20 +995,28 @@ pub async fn handle_ibc_denom(
                 bot.send_message(msg.chat.id, "Chain not found").await?;
             }
         } else {
-            bot.send_message(msg.chat.id, "Please enter a valid IBC denom (e.g., ibc/ABC123...)").await?;
+            bot.send_message(
+                msg.chat.id,
+                "Please enter a valid IBC denom (e.g., ibc/ABC123...)",
+            )
+            .await?;
         }
-        
+
         // Show the menu after showing IBC info
         let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
-        dialogue.update(State::ChainSelected { 
-            chain: chain.clone(), 
-            message_id: Some(new_menu_id) 
-        }).await?;
+        dialogue
+            .update(State::ChainSelected {
+                chain: chain.clone(),
+                message_id: Some(new_menu_id),
+            })
+            .await?;
     } else {
-        dialogue.update(State::ChainSelected { 
-            chain, 
-            message_id: None 
-        }).await?;
+        dialogue
+            .update(State::ChainSelected {
+                chain,
+                message_id: None,
+            })
+            .await?;
     }
     Ok(())
 }
@@ -844,26 +1030,34 @@ pub async fn handle_ibc_channel(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(text) = msg.text() {
         // Parse the input - could be "23", "channel-23", or "channel-23 transfer"
-        let parts: Vec<&str> = text.trim().split_whitespace().collect();
-        let channel_input = parts.get(0).unwrap_or(&"");
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        let channel_input = parts.first().unwrap_or(&"");
         let port_id = parts.get(1).unwrap_or(&"transfer");
 
         let channel_id = format_channel_input(channel_input);
 
         // Validate channel format
         if !channel_id.starts_with("channel-") {
-            bot.send_message(msg.chat.id, "Please enter a valid channel (e.g., 0, channel-0)").await?;
+            bot.send_message(
+                msg.chat.id,
+                "Please enter a valid channel (e.g., 0, channel-0)",
+            )
+            .await?;
             let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
-            dialogue.update(State::ChainSelected {
-                chain: chain.clone(),
-                message_id: Some(new_menu_id)
-            }).await?;
+            dialogue
+                .update(State::ChainSelected {
+                    chain: chain.clone(),
+                    message_id: Some(new_menu_id),
+                })
+                .await?;
             return Ok(());
         }
 
         // Get chain info to find REST endpoints
         if let Some(chain_info) = cache.get_chain(&chain).await? {
-            match query_ibc_channel_info_with_fallback(&chain_info.apis.rest, &channel_id, port_id).await {
+            match query_ibc_channel_info_with_fallback(&chain_info.apis.rest, &channel_id, port_id)
+                .await
+            {
                 Ok(info) => {
                     let message = format!(
                         "✅ IBC Route Information\n\n\
@@ -905,15 +1099,19 @@ pub async fn handle_ibc_channel(
 
         // Show the menu after showing IBC route info
         let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
-        dialogue.update(State::ChainSelected {
-            chain: chain.clone(),
-            message_id: Some(new_menu_id)
-        }).await?;
+        dialogue
+            .update(State::ChainSelected {
+                chain: chain.clone(),
+                message_id: Some(new_menu_id),
+            })
+            .await?;
     } else {
-        dialogue.update(State::ChainSelected {
-            chain,
-            message_id: None
-        }).await?;
+        dialogue
+            .update(State::ChainSelected {
+                chain,
+                message_id: None,
+            })
+            .await?;
     }
     Ok(())
 }
@@ -930,12 +1128,15 @@ pub async fn handle_wallet_address(
 
         // Basic validation
         if address.is_empty() || address.len() < 10 || address.len() > 100 {
-            bot.send_message(msg.chat.id, "Please enter a valid wallet address.").await?;
+            bot.send_message(msg.chat.id, "Please enter a valid wallet address.")
+                .await?;
             let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
-            dialogue.update(State::ChainSelected {
-                chain: chain.clone(),
-                message_id: Some(new_menu_id)
-            }).await?;
+            dialogue
+                .update(State::ChainSelected {
+                    chain: chain.clone(),
+                    message_id: Some(new_menu_id),
+                })
+                .await?;
             return Ok(());
         }
 
@@ -960,9 +1161,15 @@ pub async fn handle_wallet_address(
                             let display_denom = if bal.denom.starts_with("ibc/") {
                                 // Try to resolve IBC denom
                                 let ibc_hash = bal.denom.strip_prefix("ibc/").unwrap_or(&bal.denom);
-                                match query_ibc_denom_with_fallback(&chain_info.apis.rest, ibc_hash).await {
+                                match query_ibc_denom_with_fallback(&chain_info.apis.rest, ibc_hash)
+                                    .await
+                                {
                                     Ok((_path, base_denom)) => {
-                                        format!("{} \\({}\\)", escape_markdown(&base_denom), escape_markdown(&truncate_ibc_hash(&bal.denom)))
+                                        format!(
+                                            "{} \\({}\\)",
+                                            escape_markdown(&base_denom),
+                                            escape_markdown(&truncate_ibc_hash(&bal.denom))
+                                        )
                                     }
                                     Err(_) => escape_markdown(&bal.denom),
                                 }
@@ -1015,15 +1222,168 @@ pub async fn handle_wallet_address(
 
         // Show the menu after showing balance info
         let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
-        dialogue.update(State::ChainSelected {
-            chain: chain.clone(),
-            message_id: Some(new_menu_id)
-        }).await?;
+        dialogue
+            .update(State::ChainSelected {
+                chain: chain.clone(),
+                message_id: Some(new_menu_id),
+            })
+            .await?;
     } else {
-        dialogue.update(State::ChainSelected {
-            chain,
-            message_id: None
-        }).await?;
+        dialogue
+            .update(State::ChainSelected {
+                chain,
+                message_id: None,
+            })
+            .await?;
+    }
+    Ok(())
+}
+
+fn parse_pool_id(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.parse::<u64>().is_ok() {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
+}
+
+pub async fn handle_osmosis_pool_incentives(
+    bot: Bot,
+    dialogue: MyDialogue,
+    cache: Arc<RegistryCache>,
+    msg: Message,
+    (chain, _message_id): (String, Option<MessageId>),
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(text) = msg.text() {
+        let Some(pool_id) = parse_pool_id(text) else {
+            bot.send_message(msg.chat.id, "Please enter a numeric Osmosis pool ID.")
+                .await?;
+            let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+            dialogue
+                .update(State::ChainSelected {
+                    chain: chain.clone(),
+                    message_id: Some(new_menu_id),
+                })
+                .await?;
+            return Ok(());
+        };
+
+        if let Some(chain_info) = cache.get_chain(&chain).await? {
+            match query_osmosis_pool_incentives(&chain_info.apis.rest, &pool_id).await {
+                Ok(incentives) => {
+                    bot.send_message(
+                        msg.chat.id,
+                        format_osmosis_pool_incentives(&pool_id, &incentives),
+                    )
+                    .await?;
+                }
+                Err(e) => {
+                    bot.send_message(
+                        msg.chat.id,
+                        format!("Could not fetch Osmosis pool incentives: {e}"),
+                    )
+                    .await?;
+                }
+            }
+        } else {
+            bot.send_message(msg.chat.id, "Osmosis chain info not found.")
+                .await?;
+        }
+
+        let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+        dialogue
+            .update(State::ChainSelected {
+                chain: chain.clone(),
+                message_id: Some(new_menu_id),
+            })
+            .await?;
+    }
+    Ok(())
+}
+
+pub async fn handle_osmosis_pool_info(
+    bot: Bot,
+    dialogue: MyDialogue,
+    cache: Arc<RegistryCache>,
+    msg: Message,
+    (chain, _message_id): (String, Option<MessageId>),
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(text) = msg.text() {
+        let Some(pool_id) = parse_pool_id(text) else {
+            bot.send_message(msg.chat.id, "Please enter a numeric Osmosis pool ID.")
+                .await?;
+            let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+            dialogue
+                .update(State::ChainSelected {
+                    chain: chain.clone(),
+                    message_id: Some(new_menu_id),
+                })
+                .await?;
+            return Ok(());
+        };
+
+        if let Some(chain_info) = cache.get_chain(&chain).await? {
+            match query_osmosis_pool_info(&chain_info.apis.rest, &pool_id).await {
+                Ok(pool) => {
+                    bot.send_message(msg.chat.id, format_osmosis_pool_info(&pool_id, &pool))
+                        .await?;
+                }
+                Err(e) => {
+                    bot.send_message(msg.chat.id, format!("Could not fetch Osmosis pool: {e}"))
+                        .await?;
+                }
+            }
+        } else {
+            bot.send_message(msg.chat.id, "Osmosis chain info not found.")
+                .await?;
+        }
+
+        let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+        dialogue
+            .update(State::ChainSelected {
+                chain: chain.clone(),
+                message_id: Some(new_menu_id),
+            })
+            .await?;
+    }
+    Ok(())
+}
+
+pub async fn handle_osmosis_token_price(
+    bot: Bot,
+    dialogue: MyDialogue,
+    msg: Message,
+    (chain, _message_id): (String, Option<MessageId>),
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(text) = msg.text() {
+        let token = text.trim();
+        if token.is_empty() {
+            bot.send_message(
+                msg.chat.id,
+                "Please enter an Osmosis token symbol or base denom.",
+            )
+            .await?;
+        } else {
+            match query_osmosis_token_price(token).await {
+                Ok(price) => {
+                    bot.send_message(msg.chat.id, format_osmosis_token_price(&price))
+                        .await?;
+                }
+                Err(e) => {
+                    bot.send_message(msg.chat.id, format!("Could not fetch Osmosis price: {e}"))
+                        .await?;
+                }
+            }
+        }
+
+        let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
+        dialogue
+            .update(State::ChainSelected {
+                chain: chain.clone(),
+                message_id: Some(new_menu_id),
+            })
+            .await?;
     }
     Ok(())
 }
@@ -1042,7 +1402,7 @@ pub async fn handle_text(
             let state = dialogue.get().await?.unwrap_or_default();
             match state {
                 State::ChainSelected { chain, message_id } => {
-                    let actions = if !chain.contains("testnet") {
+                    let mut actions = if !chain.contains("testnet") {
                         vec![
                             "chain_info",
                             "peer_nodes",
@@ -1053,17 +1413,15 @@ pub async fn handle_text(
                             "check_balance",
                         ]
                     } else {
-                        vec![
-                            "chain_info",
-                            "peer_nodes",
-                            "endpoints",
-                            "explorers",
-                        ]
+                        vec!["chain_info", "peer_nodes", "endpoints", "explorers"]
                     };
+                    if is_osmosis_mainnet(&chain) {
+                        actions.extend(["pool_incentives", "pool_info", "price_info"]);
+                    }
 
                     if num > 0 && num <= actions.len() {
                         let action = actions[num - 1];
-                        
+
                         // Delete the previous menu if it exists
                         if let Some(menu_id) = message_id {
                             if let Err(e) = bot.delete_message(msg.chat.id, menu_id).await {
@@ -1071,13 +1429,14 @@ pub async fn handle_text(
                                 eprintln!("Failed to delete menu: {}", e);
                             }
                         }
-                        
+
                         match action {
                             "chain_info" => {
                                 let chain_data = cache.get_chain(&chain).await?;
                                 let assets_data = cache.get_assets(&chain).await?;
 
-                                if let (Some(chain_info), Some(assets)) = (chain_data, assets_data) {
+                                if let (Some(chain_info), Some(assets)) = (chain_data, assets_data)
+                                {
                                     let base_denom = chain_info
                                         .staking
                                         .staking_tokens
@@ -1153,24 +1512,33 @@ pub async fn handle_text(
                                         .parse_mode(ParseMode::MarkdownV2)
                                         .await?;
                                 } else {
-                                    bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
+                                    bot.send_message(
+                                        msg.chat.id,
+                                        format!("Chain {} not found", chain),
+                                    )
+                                    .await?;
                                 }
                                 // Show menu again
                                 let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
-                                dialogue.update(State::ChainSelected { 
-                                    chain: chain.clone(), 
-                                    message_id: Some(new_menu_id) 
-                                }).await?;
+                                dialogue
+                                    .update(State::ChainSelected {
+                                        chain: chain.clone(),
+                                        message_id: Some(new_menu_id),
+                                    })
+                                    .await?;
                             }
                             "peer_nodes" => {
                                 // Show peer nodes directly
                                 let chain_data = cache.get_chain(&chain).await?;
-                                
+
                                 if let Some(chain_info) = chain_data {
-                                    let mut message = String::from("*Seed Nodes*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n");
-                                    
+                                    let mut message = String::from(
+                                        "*Seed Nodes*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n",
+                                    );
+
                                     for seed in chain_info.peers.seeds.iter().take(5) {
-                                        let provider = seed.provider.as_deref().unwrap_or("unknown");
+                                        let provider =
+                                            seed.provider.as_deref().unwrap_or("unknown");
                                         message.push_str(&format!(
                                             "*{}*:\nid: `{}`\nURL: `{}`\n\n",
                                             escape_markdown(provider),
@@ -1178,9 +1546,9 @@ pub async fn handle_text(
                                             escape_markdown(&seed.address)
                                         ));
                                     }
-                                    
+
                                     message.push_str("\n*Persistent Peers*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n");
-                                    
+
                                     for peer in chain_info.peers.persistent_peers.iter().take(5) {
                                         message.push_str(&format!(
                                             "id: `{}`\nURL: `{}`\n\n",
@@ -1188,27 +1556,33 @@ pub async fn handle_text(
                                             escape_markdown(&peer.address)
                                         ));
                                     }
-                                    
+
                                     bot.send_message(msg.chat.id, message)
                                         .parse_mode(ParseMode::MarkdownV2)
                                         .await?;
                                 } else {
-                                    bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
+                                    bot.send_message(
+                                        msg.chat.id,
+                                        format!("Chain {} not found", chain),
+                                    )
+                                    .await?;
                                 }
                                 // Show menu again
                                 let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
-                                dialogue.update(State::ChainSelected { 
-                                    chain: chain.clone(), 
-                                    message_id: Some(new_menu_id) 
-                                }).await?;
+                                dialogue
+                                    .update(State::ChainSelected {
+                                        chain: chain.clone(),
+                                        message_id: Some(new_menu_id),
+                                    })
+                                    .await?;
                             }
                             "endpoints" => {
                                 // Show endpoints directly
                                 let chain_data = cache.get_chain(&chain).await?;
-                                
+
                                 if let Some(chain_info) = chain_data {
                                     let mut message = String::from("*RPC*\n\\-\\-\\-\n");
-                                    
+
                                     for rpc in chain_info.apis.rpc.iter().take(5) {
                                         let provider = rpc.provider.as_deref().unwrap_or("unknown");
                                         message.push_str(&format!(
@@ -1217,22 +1591,24 @@ pub async fn handle_text(
                                             escape_markdown(&rpc.address)
                                         ));
                                     }
-                                    
+
                                     message.push_str("\n*REST*\n\\-\\-\\-\\-\n");
-                                    
+
                                     for rest in chain_info.apis.rest.iter().take(5) {
-                                        let provider = rest.provider.as_deref().unwrap_or("unknown");
+                                        let provider =
+                                            rest.provider.as_deref().unwrap_or("unknown");
                                         message.push_str(&format!(
                                             "*{}*:\n`{}`\n\n",
                                             escape_markdown(provider),
                                             escape_markdown(&rest.address)
                                         ));
                                     }
-                                    
+
                                     message.push_str("\n*GRPC*\n\\-\\-\\-\\-\n");
 
                                     for grpc in chain_info.apis.grpc.iter().take(5) {
-                                        let provider = grpc.provider.as_deref().unwrap_or("unknown");
+                                        let provider =
+                                            grpc.provider.as_deref().unwrap_or("unknown");
                                         message.push_str(&format!(
                                             "*{}*:\n`{}`\n\n",
                                             escape_markdown(provider),
@@ -1243,8 +1619,11 @@ pub async fn handle_text(
                                     if !chain_info.apis.evm_http_jsonrpc.is_empty() {
                                         message.push_str("\n*EVM RPC*\n\\-\\-\\-\\-\\-\\-\\-\\-\n");
 
-                                        for evm_rpc in chain_info.apis.evm_http_jsonrpc.iter().take(5) {
-                                            let provider = evm_rpc.provider.as_deref().unwrap_or("unknown");
+                                        for evm_rpc in
+                                            chain_info.apis.evm_http_jsonrpc.iter().take(5)
+                                        {
+                                            let provider =
+                                                evm_rpc.provider.as_deref().unwrap_or("unknown");
                                             message.push_str(&format!(
                                                 "*{}*:\n`{}`\n\n",
                                                 escape_markdown(provider),
@@ -1257,22 +1636,28 @@ pub async fn handle_text(
                                         .parse_mode(ParseMode::MarkdownV2)
                                         .await?;
                                 } else {
-                                    bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
+                                    bot.send_message(
+                                        msg.chat.id,
+                                        format!("Chain {} not found", chain),
+                                    )
+                                    .await?;
                                 }
                                 // Show menu again
                                 let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
-                                dialogue.update(State::ChainSelected { 
-                                    chain: chain.clone(), 
-                                    message_id: Some(new_menu_id) 
-                                }).await?;
+                                dialogue
+                                    .update(State::ChainSelected {
+                                        chain: chain.clone(),
+                                        message_id: Some(new_menu_id),
+                                    })
+                                    .await?;
                             }
                             "explorers" => {
                                 // Show explorers directly
                                 let chain_data = cache.get_chain(&chain).await?;
-                                
+
                                 if let Some(chain_info) = chain_data {
                                     let mut message = String::from("*Block Explorers*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\\-\n\n");
-                                    
+
                                     for explorer in &chain_info.explorers {
                                         message.push_str(&format!(
                                             "*{}*:\n`{}`\n\n",
@@ -1280,36 +1665,105 @@ pub async fn handle_text(
                                             escape_markdown(&explorer.url)
                                         ));
                                     }
-                                    
+
                                     bot.send_message(msg.chat.id, message)
                                         .parse_mode(ParseMode::MarkdownV2)
                                         .await?;
                                 } else {
-                                    bot.send_message(msg.chat.id, format!("Chain {} not found", chain)).await?;
+                                    bot.send_message(
+                                        msg.chat.id,
+                                        format!("Chain {} not found", chain),
+                                    )
+                                    .await?;
                                 }
                                 // Show menu again
                                 let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
-                                dialogue.update(State::ChainSelected { 
-                                    chain: chain.clone(), 
-                                    message_id: Some(new_menu_id) 
-                                }).await?;
+                                dialogue
+                                    .update(State::ChainSelected {
+                                        chain: chain.clone(),
+                                        message_id: Some(new_menu_id),
+                                    })
+                                    .await?;
                             }
                             "ibc_id" => {
-                                dialogue.update(State::AwaitingIbcDenom { chain, message_id: Some(msg.id) }).await?;
-                                bot.send_message(msg.chat.id, "Enter IBC denom (e.g., ibc/ABC123...):").await?;
+                                dialogue
+                                    .update(State::AwaitingIbcDenom {
+                                        chain,
+                                        message_id: Some(msg.id),
+                                    })
+                                    .await?;
+                                bot.send_message(
+                                    msg.chat.id,
+                                    "Enter IBC denom (e.g., ibc/ABC123...):",
+                                )
+                                .await?;
                             }
                             "ibc_route" => {
-                                dialogue.update(State::AwaitingIbcChannel { chain, message_id: Some(msg.id) }).await?;
+                                dialogue
+                                    .update(State::AwaitingIbcChannel {
+                                        chain,
+                                        message_id: Some(msg.id),
+                                    })
+                                    .await?;
                                 bot.send_message(msg.chat.id, "Enter IBC channel (e.g., 0 or channel-0):\nOptionally add port (e.g., channel-0 transfer):").await?;
                             }
                             "check_balance" => {
-                                dialogue.update(State::AwaitingWalletAddress { chain, message_id: Some(msg.id) }).await?;
-                                bot.send_message(msg.chat.id, "Enter wallet address to check balance:").await?;
+                                dialogue
+                                    .update(State::AwaitingWalletAddress {
+                                        chain,
+                                        message_id: Some(msg.id),
+                                    })
+                                    .await?;
+                                bot.send_message(
+                                    msg.chat.id,
+                                    "Enter wallet address to check balance:",
+                                )
+                                .await?;
+                            }
+                            "pool_incentives" => {
+                                dialogue
+                                    .update(State::AwaitingOsmosisPoolIncentives {
+                                        chain,
+                                        message_id: Some(msg.id),
+                                    })
+                                    .await?;
+                                bot.send_message(
+                                    msg.chat.id,
+                                    "Enter Osmosis pool ID for LP incentives:",
+                                )
+                                .await?;
+                            }
+                            "pool_info" => {
+                                dialogue
+                                    .update(State::AwaitingOsmosisPoolInfo {
+                                        chain,
+                                        message_id: Some(msg.id),
+                                    })
+                                    .await?;
+                                bot.send_message(
+                                    msg.chat.id,
+                                    "Enter Osmosis pool ID for pool info:",
+                                )
+                                .await?;
+                            }
+                            "price_info" => {
+                                dialogue
+                                    .update(State::AwaitingOsmosisTokenTicker {
+                                        chain,
+                                        message_id: Some(msg.id),
+                                    })
+                                    .await?;
+                                bot.send_message(
+                                    msg.chat.id,
+                                    "Enter Osmosis token symbol or base denom:",
+                                )
+                                .await?;
                             }
                             _ => {}
                         }
                     } else {
-                        bot.send_message(msg.chat.id, "Invalid option number. Please try again.").await?;
+                        bot.send_message(msg.chat.id, "Invalid option number. Please try again.")
+                            .await?;
                     }
                 }
                 _ => {
@@ -1322,25 +1776,28 @@ pub async fn handle_text(
             }
             return Ok(());
         }
-        
+
         // Handle direct IBC denom input
         if text_lower.starts_with("ibc/") {
             // Get current state to find the selected chain
             let state = dialogue.get().await?.unwrap_or_default();
             match state {
-                State::ChainSelected { chain, .. } | 
-                State::AwaitingIbcDenom { chain, .. } => {
+                State::ChainSelected { chain, .. } | State::AwaitingIbcDenom { chain, .. } => {
                     let ibc_hash = &text[4..]; // Remove "ibc/" prefix
-                    
+
                     // Get chain info to find REST endpoint
                     if let Some(chain_info) = cache.get_chain(&chain).await? {
-                        if let Some(rest) = find_healthy_rest_endpoint(&chain_info.apis.rest).await {
+                        if let Some(rest) = find_healthy_rest_endpoint(&chain_info.apis.rest).await
+                        {
                             match query_ibc_denom(&rest, ibc_hash).await {
                                 Ok((path, base_denom)) => {
                                     let message = if !path.is_empty() {
                                         format!("✅ IBC Denom Trace Found:\n\nPath: {}\nBase Denomination: {}", path, base_denom)
                                     } else {
-                                        format!("✅ IBC Denom Trace Found:\n\nBase Denomination: {}", base_denom)
+                                        format!(
+                                            "✅ IBC Denom Trace Found:\n\nBase Denomination: {}",
+                                            base_denom
+                                        )
                                     };
                                     bot.send_message(msg.chat.id, message).await?;
                                 }
@@ -1349,26 +1806,27 @@ pub async fn handle_text(
                                         "❌ Could not resolve IBC denom:\n{}\n\nThis denom might not exist on {} or the chain's REST API might be unavailable.",
                                         e, chain
                                     );
-                                    bot.send_message(
-                                        msg.chat.id,
-                                        error_message,
-                                    )
-                                    .await?;
+                                    bot.send_message(msg.chat.id, error_message).await?;
                                 }
                             }
                         } else {
-                            bot.send_message(msg.chat.id, "No healthy REST endpoint found for this chain")
-                                .await?;
+                            bot.send_message(
+                                msg.chat.id,
+                                "No healthy REST endpoint found for this chain",
+                            )
+                            .await?;
                         }
                     } else {
                         bot.send_message(msg.chat.id, "Chain not found").await?;
                     }
                     // Show menu again after IBC lookup
                     let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
-                    dialogue.update(State::ChainSelected { 
-                        chain: chain.clone(), 
-                        message_id: Some(new_menu_id) 
-                    }).await?;
+                    dialogue
+                        .update(State::ChainSelected {
+                            chain: chain.clone(),
+                            message_id: Some(new_menu_id),
+                        })
+                        .await?;
                 }
                 _ => {
                     bot.send_message(
@@ -1380,20 +1838,22 @@ pub async fn handle_text(
             }
             return Ok(());
         }
-        
+
         // Check if it's a chain name
         let chains = cache.list_chains().await?;
         if chains.iter().any(|c| c.to_lowercase() == text_lower) {
             // Delete any previous menu if in chain selected state
             let state = dialogue.get().await?.unwrap_or_default();
-            if let State::ChainSelected { message_id, .. } = state {
-                if let Some(menu_id) = message_id {
-                    if let Err(e) = bot.delete_message(msg.chat.id, menu_id).await {
-                        eprintln!("Failed to delete previous menu: {}", e);
-                    }
+            if let State::ChainSelected {
+                message_id: Some(menu_id),
+                ..
+            } = state
+            {
+                if let Err(e) = bot.delete_message(msg.chat.id, menu_id).await {
+                    eprintln!("Failed to delete previous menu: {}", e);
                 }
             }
-            
+
             // Show chain menu inline
             let mut buttons = vec![
                 vec![
@@ -1414,26 +1874,45 @@ pub async fn handle_text(
                     InlineKeyboardButton::callback("5. IBC-ID", "action:ibc_id"),
                     InlineKeyboardButton::callback("6. IBC Route Info", "action:ibc_route"),
                 ]);
-                buttons.push(vec![
-                    InlineKeyboardButton::callback("7. Check Balance", "action:check_balance"),
-                ]);
+                buttons.push(vec![InlineKeyboardButton::callback(
+                    "7. Check Balance",
+                    "action:check_balance",
+                )]);
+                if is_osmosis_mainnet(&text_lower) {
+                    push_osmosis_buttons(&mut buttons);
+                }
             }
 
             // Add installation guide link if available on Polkachu
             if let Some(install_url) = get_polkachu_installation_url(&text_lower) {
-                buttons.push(vec![InlineKeyboardButton::url("Node Installation Guide", install_url.parse().unwrap())]);
+                buttons.push(vec![InlineKeyboardButton::url(
+                    "Node Installation Guide",
+                    install_url.parse().unwrap(),
+                )]);
             }
 
-            buttons.push(vec![InlineKeyboardButton::callback("← Back", "back:chains")]);
-            
+            buttons.push(vec![InlineKeyboardButton::callback(
+                "← Back",
+                "back:chains",
+            )]);
+
             let keyboard = InlineKeyboardMarkup::new(buttons);
-            
-            let sent_msg = bot.send_message(msg.chat.id, format!("Selected: {}\n\nChoose an action:", text_lower))
+
+            let sent_msg = bot
+                .send_message(
+                    msg.chat.id,
+                    format!("Selected: {}\n\nChoose an action:", text_lower),
+                )
                 .reply_markup(keyboard)
                 .await?;
-            
+
             // Update dialogue with the new menu's message ID
-            dialogue.update(State::ChainSelected { chain: text_lower.clone(), message_id: Some(sent_msg.id) }).await?;
+            dialogue
+                .update(State::ChainSelected {
+                    chain: text_lower.clone(),
+                    message_id: Some(sent_msg.id),
+                })
+                .await?;
         } else {
             bot.send_message(
                 msg.chat.id,
@@ -1442,7 +1921,7 @@ pub async fn handle_text(
             .await?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -1455,7 +1934,7 @@ pub async fn handle_callback(
     // This is a fallback handler for callbacks that don't match expected states
     // Reset the dialogue and prompt user to start over
     dialogue.reset().await?;
-    
+
     if let Some(Message { chat, .. }) = &q.message {
         bot.send_message(
             chat.id,
@@ -1463,7 +1942,7 @@ pub async fn handle_callback(
         )
         .await?;
     }
-    
+
     bot.answer_callback_query(q.id).await?;
     Ok(())
 }
