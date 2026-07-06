@@ -4,10 +4,12 @@ mod unit_tests {
         bot::{MyDialogue, State},
         utils::{
             format_channel_input, format_osmosis_pool_incentives, format_osmosis_pool_info,
-            format_osmosis_token_price, Balance, OsmosisGaugeIncentive, OsmosisPoolIncentives,
-            OsmosisTokenPrice,
+            format_osmosis_token_price, format_wallet_balances, prioritize_grpc_endpoints, Balance,
+            IbcDenomTrace, OsmosisGaugeIncentive, OsmosisPoolIncentives, OsmosisTokenPrice,
+            WalletBalance,
         },
     };
+    use cosmos_chain_registry::chain;
     use serde_json::json;
     use teloxide::{
         dispatching::dialogue::InMemStorage,
@@ -379,5 +381,78 @@ mod unit_tests {
         assert!(formatted.contains("Token: Osmosis (OSMO)"));
         assert!(formatted.contains("Price: 0.037 USDC"));
         assert!(formatted.contains("ibc/498A0751..."));
+    }
+
+    #[test]
+    fn test_prioritize_grpc_endpoints_prefers_polkachu_plaintext() {
+        let endpoints = vec![
+            chain::Grpc {
+                address: "http://insecure.example:9090".to_string(),
+                provider: Some("Explicit".to_string()),
+            },
+            chain::Grpc {
+                address: "community-grpc.example:443".to_string(),
+                provider: Some("Community".to_string()),
+            },
+            chain::Grpc {
+                address: "osmosis-grpc.polkachu.com:12590".to_string(),
+                provider: Some("Polkachu".to_string()),
+            },
+        ];
+
+        let prioritized = prioritize_grpc_endpoints(&endpoints);
+
+        assert_eq!(
+            prioritized,
+            vec![
+                "http://osmosis-grpc.polkachu.com:12590/".to_string(),
+                "http://insecure.example:9090/".to_string(),
+                "https://community-grpc.example:443/".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_wallet_balance_formatting_separates_copyable_ibc_fields() {
+        let balances = vec![
+            WalletBalance {
+                balance: Balance {
+                    denom: "ibc/23B7FFE8D1673E1EBF05AB02000E23E6077967B79547A3733B60AE4ED62C4D32"
+                        .to_string(),
+                    amount: "10000000".to_string(),
+                },
+                ibc_trace: Some(IbcDenomTrace {
+                    path: "transfer/channel-123/transfer/channel-42".to_string(),
+                    base_denom: "loki".to_string(),
+                }),
+                asset_label: Some("LOKI".to_string()),
+            },
+            WalletBalance {
+                balance: Balance {
+                    denom: "factory/osmo1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/uspice".to_string(),
+                    amount: "999999".to_string(),
+                },
+                ibc_trace: None,
+                asset_label: Some("SPICE".to_string()),
+            },
+        ];
+
+        let formatted =
+            format_wallet_balances("osmo1wev8ptzj27aueu0abc", "osmosis", &balances, true);
+
+        assert!(formatted.contains("*Balances for* `osmo1wev8ptzj27aueu0...`"));
+        assert!(formatted.contains("*LOKI*"));
+        assert!(formatted.contains("Amount: `10,000,000`"));
+        assert!(formatted.contains(
+            "IBC Denom: `ibc/23B7FFE8D1673E1EBF05AB02000E23E6077967B79547A3733B60AE4ED62C4D32`"
+        ));
+        assert!(formatted.contains("IBC Path: `transfer/channel-123/transfer/channel-42`"));
+        assert!(formatted.contains("Base Denom: `loki`"));
+        assert!(formatted.contains("*SPICE*"));
+        assert!(formatted.contains("Amount: `999,999`"));
+        assert!(formatted
+            .contains("Denom: `factory/osmo1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/uspice`"));
+        assert_eq!(formatted.matches("\\-\\-\\-").count(), 1);
+        assert!(formatted.contains("_Showing first 100 assets; more balances are available\\._"));
     }
 }

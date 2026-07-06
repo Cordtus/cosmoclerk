@@ -1,7 +1,36 @@
+use base64::{engine::general_purpose, Engine as _};
 use cosmos_chain_registry::chain;
+use cosmos_sdk_proto::cosmos::{
+    bank::v1beta1::{query_client::QueryClient as BankQueryClient, QueryAllBalancesRequest},
+    base::{
+        query::v1beta1::PageRequest,
+        tendermint::v1beta1::{
+            service_client::ServiceClient as TendermintServiceClient, GetLatestBlockRequest,
+            GetNodeInfoRequest,
+        },
+    },
+};
+use ibc_proto::ibc::{
+    applications::transfer::v1::{
+        query_client::QueryClient as TransferQueryClient, QueryDenomTraceRequest,
+    },
+    core::{
+        channel::v1::{
+            query_client::QueryClient as ChannelQueryClient, QueryChannelClientStateRequest,
+            QueryChannelRequest,
+        },
+        connection::v1::{
+            query_client::QueryClient as ConnectionQueryClient, QueryConnectionRequest,
+        },
+    },
+    lightclients::tendermint::v1::ClientState as TendermintClientState,
+};
+use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::time::Duration;
+use tonic::transport::{Channel, Endpoint};
 
 pub const PAGE_SIZE: usize = 18;
 
@@ -200,6 +229,55 @@ pub async fn find_healthy_rest_endpoint(endpoints: &[chain::Rest]) -> Option<Str
     None
 }
 
+fn normalize_grpc_uri(address: &str) -> Option<String> {
+    let address = address.trim().trim_end_matches('/');
+    if address.is_empty() {
+        return None;
+    }
+
+    if address.starts_with("http://") || address.starts_with("https://") {
+        Some(format!("{address}/"))
+    } else if address.contains("://") {
+        None
+    } else {
+        let lower = address.to_lowercase();
+        let explicit_port = address
+            .rsplit_once(':')
+            .map(|(_, port)| port)
+            .filter(|port| port.chars().all(|c| c.is_ascii_digit()));
+        let uses_tls = !lower.contains("polkachu.com")
+            && explicit_port.map(|port| port == "443").unwrap_or(true);
+        let scheme = if uses_tls { "https" } else { "http" };
+        Some(format!("{scheme}://{address}/"))
+    }
+}
+
+async fn connect_grpc(endpoint: &str) -> anyhow::Result<Channel> {
+    Ok(Endpoint::from_shared(endpoint.to_string())?
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .connect()
+        .await?)
+}
+
+pub async fn check_grpc_endpoint_health(endpoint: &str) -> bool {
+    let Ok(channel) = connect_grpc(endpoint).await else {
+        return false;
+    };
+
+    let mut client = TendermintServiceClient::new(channel);
+    client.get_node_info(GetNodeInfoRequest {}).await.is_ok()
+}
+
+pub async fn find_healthy_grpc_endpoint(endpoints: &[chain::Grpc]) -> Option<String> {
+    for endpoint in prioritize_grpc_endpoints(endpoints) {
+        if check_grpc_endpoint_health(&endpoint).await {
+            return Some(endpoint);
+        }
+    }
+    None
+}
+
 pub async fn query_ibc_denom(
     rest_endpoint: &str,
     ibc_hash: &str,
@@ -318,6 +396,51 @@ pub async fn query_ibc_denom_with_fallback(
     }
 
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available")))
+}
+
+pub async fn query_ibc_denom_grpc(
+    grpc_endpoint: &str,
+    ibc_hash: &str,
+) -> anyhow::Result<IbcDenomTrace> {
+    let mut client = TransferQueryClient::new(connect_grpc(grpc_endpoint).await?);
+    let response = client
+        .denom_trace(QueryDenomTraceRequest {
+            hash: ibc_hash.to_string(),
+        })
+        .await?
+        .into_inner();
+    let trace = response
+        .denom_trace
+        .ok_or_else(|| anyhow::anyhow!("IBC denom trace not found"))?;
+
+    Ok(IbcDenomTrace {
+        path: trace.path,
+        base_denom: trace.base_denom,
+    })
+}
+
+pub async fn query_ibc_denom_grpc_first(
+    grpc_endpoints: &[chain::Grpc],
+    rest_endpoints: &[chain::Rest],
+    ibc_hash: &str,
+) -> anyhow::Result<IbcDenomTrace> {
+    let mut last_error = None;
+
+    for endpoint in prioritize_grpc_endpoints(grpc_endpoints).iter().take(3) {
+        log::info!("Trying gRPC endpoint for IBC denom trace: {}", endpoint);
+        match query_ibc_denom_grpc(endpoint, ibc_hash).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!("Failed gRPC denom trace with endpoint {}: {}", endpoint, e);
+                last_error = Some(e);
+            }
+        }
+    }
+
+    match query_ibc_denom_with_fallback(rest_endpoints, ibc_hash).await {
+        Ok((path, base_denom)) => Ok(IbcDenomTrace { path, base_denom }),
+        Err(rest_error) => Err(last_error.unwrap_or(rest_error)),
+    }
 }
 
 pub async fn query_ibc_channel_info(
@@ -462,6 +585,136 @@ pub async fn query_ibc_channel_info_with_fallback(
         .unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available for channel query")))
 }
 
+fn decode_tendermint_client_chain_id(
+    client_state: &tendermint_proto::google::protobuf::Any,
+) -> anyhow::Result<String> {
+    if !client_state
+        .type_url
+        .ends_with("ibc.lightclients.tendermint.v1.ClientState")
+    {
+        return Err(anyhow::anyhow!(
+            "unsupported client state type {}",
+            client_state.type_url
+        ));
+    }
+
+    let client_state = TendermintClientState::decode(client_state.value.as_slice())?;
+    if client_state.chain_id.is_empty() {
+        return Err(anyhow::anyhow!("decoded client state missing chain ID"));
+    }
+    Ok(client_state.chain_id)
+}
+
+pub async fn query_ibc_channel_info_grpc(
+    grpc_endpoint: &str,
+    channel_id: &str,
+    port_id: &str,
+) -> anyhow::Result<IbcChannelInfo> {
+    let transport = connect_grpc(grpc_endpoint).await?;
+
+    let mut node_client = TendermintServiceClient::new(transport.clone());
+    let node_info = node_client
+        .get_node_info(GetNodeInfoRequest {})
+        .await?
+        .into_inner();
+    let chain_id = node_info
+        .default_node_info
+        .ok_or_else(|| anyhow::anyhow!("Chain node info not found"))?
+        .network;
+
+    let mut channel_client = ChannelQueryClient::new(transport.clone());
+    let channel_response = channel_client
+        .channel(QueryChannelRequest {
+            port_id: port_id.to_string(),
+            channel_id: channel_id.to_string(),
+        })
+        .await?
+        .into_inner();
+    let channel = channel_response
+        .channel
+        .ok_or_else(|| anyhow::anyhow!("Channel {} not found on port {}", channel_id, port_id))?;
+
+    let counterparty_channel_id = channel
+        .counterparty
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Counterparty channel not found"))?
+        .channel_id
+        .clone();
+
+    let connection_id = channel
+        .connection_hops
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Connection ID not found"))?
+        .clone();
+
+    let mut connection_client = ConnectionQueryClient::new(transport);
+    let connection_response = connection_client
+        .connection(QueryConnectionRequest {
+            connection_id: connection_id.clone(),
+        })
+        .await?
+        .into_inner();
+    let connection = connection_response
+        .connection
+        .ok_or_else(|| anyhow::anyhow!("Connection {} not found", connection_id))?;
+
+    let client_id = connection.client_id.clone();
+    let counterparty = connection
+        .counterparty
+        .ok_or_else(|| anyhow::anyhow!("Counterparty connection not found"))?;
+
+    let client_state_response = channel_client
+        .channel_client_state(QueryChannelClientStateRequest {
+            port_id: port_id.to_string(),
+            channel_id: channel_id.to_string(),
+        })
+        .await?
+        .into_inner();
+    let identified_client_state = client_state_response
+        .identified_client_state
+        .ok_or_else(|| anyhow::anyhow!("Counterparty client state not found"))?;
+    let client_state = identified_client_state
+        .client_state
+        .ok_or_else(|| anyhow::anyhow!("Counterparty client state payload not found"))?;
+    let counterparty_chain_id = decode_tendermint_client_chain_id(&client_state)?;
+
+    Ok(IbcChannelInfo {
+        chain_id,
+        counterparty_chain_id,
+        client_id,
+        connection_id,
+        counterparty_client_id: counterparty.client_id,
+        counterparty_connection_id: counterparty.connection_id,
+        channel_id: channel_id.to_string(),
+        counterparty_channel_id,
+    })
+}
+
+pub async fn query_ibc_channel_info_grpc_first(
+    grpc_endpoints: &[chain::Grpc],
+    rest_endpoints: &[chain::Rest],
+    channel_id: &str,
+    port_id: &str,
+) -> anyhow::Result<IbcChannelInfo> {
+    let mut last_error = None;
+
+    for endpoint in prioritize_grpc_endpoints(grpc_endpoints).iter().take(3) {
+        log::info!("Trying gRPC endpoint for IBC channel info: {}", endpoint);
+        match query_ibc_channel_info_grpc(endpoint, channel_id, port_id).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!("Failed gRPC channel info with endpoint {}: {}", endpoint, e);
+                last_error = Some(e);
+            }
+        }
+    }
+
+    match query_ibc_channel_info_with_fallback(rest_endpoints, channel_id, port_id).await {
+        Ok(result) => Ok(result),
+        Err(rest_error) => Err(last_error.unwrap_or(rest_error)),
+    }
+}
+
 pub fn extract_channel_from_path(path: &str) -> Option<String> {
     // Parse IBC path like "transfer/channel-23/transfer/channel-0"
     // We want to extract the first channel after "transfer/"
@@ -540,11 +793,77 @@ pub async fn query_abci_info(rpc_endpoint: &str) -> Option<AbciInfo> {
     })
 }
 
+fn bytes_to_upper_hex(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return "Unknown".to_string();
+    }
+
+    bytes.iter().map(|byte| format!("{byte:02X}")).collect()
+}
+
+pub async fn query_abci_info_grpc(grpc_endpoint: &str) -> Option<AbciInfo> {
+    let channel = connect_grpc(grpc_endpoint).await.ok()?;
+    let mut client = TendermintServiceClient::new(channel);
+
+    let node_info = client
+        .get_node_info(GetNodeInfoRequest {})
+        .await
+        .ok()?
+        .into_inner();
+    let version = node_info
+        .application_version
+        .map(|version| {
+            if !version.version.is_empty() {
+                version.version
+            } else if !version.cosmos_sdk_version.is_empty() {
+                version.cosmos_sdk_version
+            } else {
+                "Unknown".to_string()
+            }
+        })
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let latest_block = client
+        .get_latest_block(GetLatestBlockRequest {})
+        .await
+        .ok()?
+        .into_inner();
+
+    if let Some(sdk_block) = latest_block.sdk_block {
+        let header = sdk_block.header?;
+        return Some(AbciInfo {
+            version,
+            last_block_height: header.height.to_string(),
+            last_block_app_hash: bytes_to_upper_hex(&header.app_hash),
+        });
+    }
+
+    let header = latest_block.block?.header?;
+    Some(AbciInfo {
+        version,
+        last_block_height: header.height.to_string(),
+        last_block_app_hash: bytes_to_upper_hex(&header.app_hash),
+    })
+}
+
 /// Balance entry from bank query
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Balance {
     pub denom: String,
     pub amount: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IbcDenomTrace {
+    pub path: String,
+    pub base_denom: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalletBalance {
+    pub balance: Balance,
+    pub ibc_trace: Option<IbcDenomTrace>,
+    pub asset_label: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -715,6 +1034,49 @@ pub async fn query_balances(
     Ok((balances, next_key))
 }
 
+pub async fn query_balances_grpc(
+    grpc_endpoint: &str,
+    address: &str,
+    pagination_key: Option<&str>,
+) -> anyhow::Result<(Vec<Balance>, Option<String>)> {
+    let key = match pagination_key {
+        Some(key) => general_purpose::STANDARD.decode(key).unwrap_or_default(),
+        None => Vec::new(),
+    };
+
+    let mut client = BankQueryClient::new(connect_grpc(grpc_endpoint).await?);
+    let response = client
+        .all_balances(QueryAllBalancesRequest {
+            address: address.to_string(),
+            pagination: Some(PageRequest {
+                key,
+                offset: 0,
+                limit: 100,
+                count_total: false,
+                reverse: false,
+            }),
+            resolve_denom: false,
+        })
+        .await?
+        .into_inner();
+
+    let balances = response
+        .balances
+        .into_iter()
+        .map(|coin| Balance {
+            denom: coin.denom,
+            amount: coin.amount,
+        })
+        .collect();
+
+    let next_key = response
+        .pagination
+        .and_then(|pagination| (!pagination.next_key.is_empty()).then_some(pagination.next_key))
+        .map(|next_key| general_purpose::STANDARD.encode(next_key));
+
+    Ok((balances, next_key))
+}
+
 /// Query balances with fallback to multiple REST endpoints
 pub async fn query_balances_with_fallback(
     endpoints: &[chain::Rest],
@@ -745,6 +1107,35 @@ pub async fn query_balances_with_fallback(
         .unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available for balance query")))
 }
 
+pub async fn query_balances_grpc_first(
+    grpc_endpoints: &[chain::Grpc],
+    rest_endpoints: &[chain::Rest],
+    address: &str,
+    pagination_key: Option<&str>,
+) -> anyhow::Result<(Vec<Balance>, Option<String>)> {
+    let mut last_error = None;
+
+    for endpoint in prioritize_grpc_endpoints(grpc_endpoints).iter().take(3) {
+        log::info!("Trying gRPC endpoint for balances: {}", endpoint);
+        match query_balances_grpc(endpoint, address, pagination_key).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!(
+                    "Failed gRPC balance query with endpoint {}: {}",
+                    endpoint,
+                    e
+                );
+                last_error = Some(e);
+            }
+        }
+    }
+
+    match query_balances_with_fallback(rest_endpoints, address, pagination_key).await {
+        Ok(result) => Ok(result),
+        Err(rest_error) => Err(last_error.unwrap_or(rest_error)),
+    }
+}
+
 /// Format amount with thousands separators
 pub fn format_amount(amount: &str) -> String {
     // Parse the amount string as a number and format with commas
@@ -770,6 +1161,112 @@ pub fn truncate_ibc_hash(hash: &str) -> String {
     } else {
         hash.to_string()
     }
+}
+
+pub fn prioritize_grpc_endpoints(endpoints: &[chain::Grpc]) -> Vec<String> {
+    let mut polkachu = Vec::new();
+    let mut others = Vec::new();
+
+    for endpoint in endpoints {
+        let Some(uri) = normalize_grpc_uri(&endpoint.address) else {
+            continue;
+        };
+
+        let is_polkachu = endpoint
+            .provider
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains("polkachu")
+            || endpoint.address.to_lowercase().contains("polkachu.com");
+
+        if is_polkachu {
+            polkachu.push(uri);
+        } else {
+            others.push(uri);
+        }
+    }
+
+    polkachu.extend(others);
+    polkachu
+}
+
+fn escape_markdown_code(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('`', "\\`")
+}
+
+fn display_asset_label(
+    denom: &str,
+    trace: Option<&IbcDenomTrace>,
+    asset_label: Option<&str>,
+) -> String {
+    if let Some(asset_label) = asset_label.filter(|label| !label.is_empty()) {
+        return asset_label.to_string();
+    }
+
+    let display = trace.map(|t| t.base_denom.as_str()).unwrap_or(denom);
+    display
+        .rsplit('/')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(display)
+        .to_string()
+}
+
+pub fn format_wallet_balances(
+    address: &str,
+    chain: &str,
+    balances: &[WalletBalance],
+    more_available: bool,
+) -> String {
+    let display_address = if address.len() > 20 {
+        format!("{}...", &address[..20])
+    } else {
+        address.to_string()
+    };
+
+    let mut message = format!(
+        "💰 *Balances for* `{}` on *{}*",
+        escape_markdown_code(&display_address),
+        escape_markdown(chain)
+    );
+
+    for (index, wallet_balance) in balances.iter().enumerate() {
+        if index > 0 {
+            message.push_str("\n\n\\-\\-\\-");
+        }
+
+        let label = display_asset_label(
+            &wallet_balance.balance.denom,
+            wallet_balance.ibc_trace.as_ref(),
+            wallet_balance.asset_label.as_deref(),
+        );
+        message.push_str(&format!(
+            "\n\n*{}*\nAmount: `{}`",
+            escape_markdown(&label),
+            escape_markdown_code(&format_amount(&wallet_balance.balance.amount))
+        ));
+
+        if let Some(trace) = &wallet_balance.ibc_trace {
+            message.push_str(&format!(
+                "\nIBC Denom: `{}`\nIBC Path: `{}`\nBase Denom: `{}`",
+                escape_markdown_code(&wallet_balance.balance.denom),
+                escape_markdown_code(&trace.path),
+                escape_markdown_code(&trace.base_denom)
+            ));
+        } else {
+            message.push_str(&format!(
+                "\nDenom: `{}`",
+                escape_markdown_code(&wallet_balance.balance.denom)
+            ));
+        }
+    }
+
+    if more_available {
+        message.push_str("\n\n_Showing first 100 assets; more balances are available\\._");
+    }
+
+    message
 }
 
 pub async fn query_osmosis_pool_info(

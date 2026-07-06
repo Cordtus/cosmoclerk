@@ -3,18 +3,19 @@ use crate::{
     cache::RegistryCache,
     utils::{
         escape_markdown, extract_channel_from_path, find_healthy_endpoint,
-        find_healthy_rest_endpoint, format_amount, format_channel_input,
+        find_healthy_grpc_endpoint, find_healthy_rest_endpoint, format_channel_input,
         format_osmosis_pool_incentives, format_osmosis_pool_info, format_osmosis_token_price,
-        get_polkachu_installation_url, query_abci_info, query_balances_with_fallback,
-        query_ibc_channel_info_with_fallback, query_ibc_denom, query_ibc_denom_with_fallback,
-        query_osmosis_pool_incentives, query_osmosis_pool_info, query_osmosis_token_price,
-        truncate_ibc_hash, PAGE_SIZE,
+        format_wallet_balances, get_polkachu_installation_url, query_abci_info,
+        query_abci_info_grpc, query_balances_grpc_first, query_ibc_channel_info_grpc_first,
+        query_ibc_denom_grpc_first, query_osmosis_pool_incentives, query_osmosis_pool_info,
+        query_osmosis_token_price, WalletBalance, PAGE_SIZE,
     },
 };
+use cosmos_chain_registry::AssetList;
 use std::sync::Arc;
 use teloxide::{
     prelude::*,
-    types::{InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ParseMode},
+    types::{ChatAction, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ParseMode},
 };
 
 pub async fn start(
@@ -342,6 +343,92 @@ async fn edit_callback_message_with_markup(
             .await?;
     }
     Ok(())
+}
+
+async fn edit_status_message(
+    bot: &Bot,
+    chat_id: ChatId,
+    message_id: MessageId,
+    text: String,
+    parse_mode: Option<ParseMode>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(parse_mode) = parse_mode {
+        bot.edit_message_text(chat_id, message_id, text)
+            .parse_mode(parse_mode)
+            .await?;
+    } else {
+        bot.edit_message_text(chat_id, message_id, text).await?;
+    }
+
+    Ok(())
+}
+
+fn split_telegram_message(text: &str, max_len: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+
+    for block in text.split("\n\n") {
+        let separator_len = if current.is_empty() { 0 } else { 2 };
+        if !current.is_empty() && current.len() + separator_len + block.len() > max_len {
+            chunks.push(current);
+            current = block.to_string();
+        } else {
+            if !current.is_empty() {
+                current.push_str("\n\n");
+            }
+            current.push_str(block);
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    chunks
+}
+
+async fn edit_or_send_markdown_result(
+    bot: &Bot,
+    chat_id: ChatId,
+    status_id: MessageId,
+    message: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let chunks = split_telegram_message(&message, 3800);
+
+    if chunks.len() == 1 {
+        edit_status_message(
+            bot,
+            chat_id,
+            status_id,
+            message,
+            Some(ParseMode::MarkdownV2),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    edit_status_message(
+        bot,
+        chat_id,
+        status_id,
+        format!("Found a large response; sending {} parts...", chunks.len()),
+        None,
+    )
+    .await?;
+
+    for chunk in chunks {
+        bot.send_message(chat_id, chunk)
+            .parse_mode(ParseMode::MarkdownV2)
+            .await?;
+    }
+
+    Ok(())
+}
+
+async fn send_processing_action(bot: &Bot, chat_id: ChatId) {
+    if let Err(e) = bot.send_chat_action(chat_id, ChatAction::Typing).await {
+        log::debug!("Could not send Telegram processing action: {}", e);
+    }
 }
 
 fn is_osmosis_mainnet(chain: &str) -> bool {
@@ -722,14 +809,20 @@ async fn show_chain_info(
             .await
             .unwrap_or_else(|| "Unknown".to_string());
 
+        let grpc = find_healthy_grpc_endpoint(&chain_info.apis.grpc)
+            .await
+            .unwrap_or_else(|| "Unknown".to_string());
+
         let explorer = chain_info
             .explorers
             .first()
             .map(|e| e.url.as_str())
             .unwrap_or("Unknown");
 
-        // Query ABCI info for version and block data
-        let abci_info = if rpc != "Unknown" {
+        // Prefer gRPC for node status, then fall back to RPC ABCI.
+        let abci_info = if grpc != "Unknown" {
+            query_abci_info_grpc(&grpc).await
+        } else if rpc != "Unknown" {
             query_abci_info(&rpc).await
         } else {
             None
@@ -741,6 +834,7 @@ async fn show_chain_info(
             Chain Name: `{}`\n\
             RPC: `{}`\n\
             REST: `{}`\n\
+            GRPC: `{}`\n\
             Address Prefix: `{}`\n\
             Base Denom: `{}`\n\
             Cointype: `{}`\n\
@@ -751,6 +845,7 @@ async fn show_chain_info(
             escape_markdown(&chain_info.chain_name),
             escape_markdown(&rpc),
             escape_markdown(&rest),
+            escape_markdown(&grpc),
             escape_markdown(&chain_info.bech32_prefix),
             escape_markdown(base_denom),
             chain_info.slip44,
@@ -938,26 +1033,37 @@ pub async fn handle_ibc_denom(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(text) = msg.text() {
         if let Some(ibc_hash) = text.strip_prefix("ibc/") {
-            // Get chain info to find REST endpoint
+            send_processing_action(&bot, msg.chat.id).await;
+            let status = bot
+                .send_message(msg.chat.id, format!("Resolving IBC denom on {chain}..."))
+                .await?;
+
             if let Some(chain_info) = cache.get_chain(&chain).await? {
-                match query_ibc_denom_with_fallback(&chain_info.apis.rest, ibc_hash).await {
-                    Ok((path, base_denom)) => {
-                        let mut message = if !path.is_empty() {
+                match query_ibc_denom_grpc_first(
+                    &chain_info.apis.grpc,
+                    &chain_info.apis.rest,
+                    ibc_hash,
+                )
+                .await
+                {
+                    Ok(trace) => {
+                        let mut message = if !trace.path.is_empty() {
                             format!(
                                 "✅ IBC Denom Trace Found:\n\nPath: {}\nBase Denomination: {}",
-                                path, base_denom
+                                trace.path, trace.base_denom
                             )
                         } else {
                             format!(
                                 "✅ IBC Denom Trace Found:\n\nBase Denomination: {}",
-                                base_denom
+                                trace.base_denom
                             )
                         };
 
                         // Try to extract channel from path and fetch route info
-                        if !path.is_empty() {
-                            if let Some(channel) = extract_channel_from_path(&path) {
-                                match query_ibc_channel_info_with_fallback(
+                        if !trace.path.is_empty() {
+                            if let Some(channel) = extract_channel_from_path(&trace.path) {
+                                match query_ibc_channel_info_grpc_first(
+                                    &chain_info.apis.grpc,
                                     &chain_info.apis.rest,
                                     &channel,
                                     "transfer",
@@ -966,7 +1072,7 @@ pub async fn handle_ibc_denom(
                                 {
                                     Ok(info) => {
                                         message.push_str(&format!(
-                                            "\n\n📍 **Source Chain:** {}\n(via {})",
+                                            "\n\n📍 Source Chain: {}\nvia {}",
                                             info.counterparty_chain_id, channel
                                         ));
                                     }
@@ -981,18 +1087,26 @@ pub async fn handle_ibc_denom(
                             }
                         }
 
-                        bot.send_message(msg.chat.id, message).await?;
+                        edit_status_message(&bot, msg.chat.id, status.id, message, None).await?;
                     }
                     Err(e) => {
                         let error_message = format!(
-                            "❌ Could not resolve IBC denom:\n{}\n\nThis denom might not exist on {} or the chain's REST API might be unavailable.",
+                            "❌ Could not resolve IBC denom:\n{}\n\nThis denom might not exist on {} or the chain's APIs might be unavailable.",
                             e, chain
                         );
-                        bot.send_message(msg.chat.id, error_message).await?;
+                        edit_status_message(&bot, msg.chat.id, status.id, error_message, None)
+                            .await?;
                     }
                 }
             } else {
-                bot.send_message(msg.chat.id, "Chain not found").await?;
+                edit_status_message(
+                    &bot,
+                    msg.chat.id,
+                    status.id,
+                    "Chain not found".to_string(),
+                    None,
+                )
+                .await?;
             }
         } else {
             bot.send_message(
@@ -1053,22 +1167,31 @@ pub async fn handle_ibc_channel(
             return Ok(());
         }
 
-        // Get chain info to find REST endpoints
+        send_processing_action(&bot, msg.chat.id).await;
+        let status = bot
+            .send_message(msg.chat.id, format!("Looking up IBC route on {chain}..."))
+            .await?;
+
         if let Some(chain_info) = cache.get_chain(&chain).await? {
-            match query_ibc_channel_info_with_fallback(&chain_info.apis.rest, &channel_id, port_id)
-                .await
+            match query_ibc_channel_info_grpc_first(
+                &chain_info.apis.grpc,
+                &chain_info.apis.rest,
+                &channel_id,
+                port_id,
+            )
+            .await
             {
                 Ok(info) => {
                     let message = format!(
                         "✅ IBC Route Information\n\n\
-                        **Source Chain:** {}\n\
-                        **Destination Chain:** {}\n\n\
-                        **Channel Details:**\n\
+                        Source Chain: {}\n\
+                        Destination Chain: {}\n\n\
+                        Channel Details:\n\
                         • Channel: {}\n\
                         • Port: {}\n\
                         • Client ID: {}\n\
                         • Connection: {}\n\n\
-                        **Counterparty Details:**\n\
+                        Counterparty Details:\n\
                         • Channel: {}\n\
                         • Client ID: {}\n\
                         • Connection: {}",
@@ -1082,7 +1205,7 @@ pub async fn handle_ibc_channel(
                         info.counterparty_client_id,
                         info.counterparty_connection_id
                     );
-                    bot.send_message(msg.chat.id, message).await?;
+                    edit_status_message(&bot, msg.chat.id, status.id, message, None).await?;
                 }
                 Err(e) => {
                     let error_message = format!(
@@ -1090,11 +1213,18 @@ pub async fn handle_ibc_channel(
                         Make sure the channel exists on {}.",
                         e, chain
                     );
-                    bot.send_message(msg.chat.id, error_message).await?;
+                    edit_status_message(&bot, msg.chat.id, status.id, error_message, None).await?;
                 }
             }
         } else {
-            bot.send_message(msg.chat.id, "Chain not found").await?;
+            edit_status_message(
+                &bot,
+                msg.chat.id,
+                status.id,
+                "Chain not found".to_string(),
+                None,
+            )
+            .await?;
         }
 
         // Show the menu after showing IBC route info
@@ -1114,6 +1244,21 @@ pub async fn handle_ibc_channel(
             .await?;
     }
     Ok(())
+}
+
+fn asset_label_for_denom(assets: Option<&AssetList>, denom: &str) -> Option<String> {
+    let asset = assets?.assets.iter().find(|asset| {
+        asset.base == denom
+            || asset
+                .denom_units
+                .iter()
+                .any(|denom_unit| denom_unit.denom == denom)
+    })?;
+
+    [&asset.symbol, &asset.name, &asset.display]
+        .into_iter()
+        .find(|label| !label.is_empty())
+        .cloned()
 }
 
 pub async fn handle_wallet_address(
@@ -1140,9 +1285,28 @@ pub async fn handle_wallet_address(
             return Ok(());
         }
 
-        // Get chain info to find REST endpoints
+        send_processing_action(&bot, msg.chat.id).await;
+        let status = bot
+            .send_message(msg.chat.id, format!("Checking balances on {chain}..."))
+            .await?;
+
         if let Some(chain_info) = cache.get_chain(&chain).await? {
-            match query_balances_with_fallback(&chain_info.apis.rest, address, None).await {
+            let assets_data = match cache.get_assets(&chain).await {
+                Ok(assets) => assets,
+                Err(e) => {
+                    log::warn!("Could not fetch asset metadata for {}: {}", chain, e);
+                    None
+                }
+            };
+
+            match query_balances_grpc_first(
+                &chain_info.apis.grpc,
+                &chain_info.apis.rest,
+                address,
+                None,
+            )
+            .await
+            {
                 Ok((balances, next_key)) => {
                     if balances.is_empty() {
                         let message = format!(
@@ -1151,73 +1315,70 @@ pub async fn handle_wallet_address(
                             escape_markdown(address),
                             escape_markdown(&chain)
                         );
-                        bot.send_message(msg.chat.id, message)
-                            .parse_mode(ParseMode::MarkdownV2)
-                            .await?;
+                        edit_or_send_markdown_result(&bot, msg.chat.id, status.id, message).await?;
                     } else {
-                        // Build balance list with IBC denom resolution
-                        let mut balance_lines = Vec::new();
-                        for bal in &balances {
-                            let display_denom = if bal.denom.starts_with("ibc/") {
-                                // Try to resolve IBC denom
-                                let ibc_hash = bal.denom.strip_prefix("ibc/").unwrap_or(&bal.denom);
-                                match query_ibc_denom_with_fallback(&chain_info.apis.rest, ibc_hash)
+                        let mut wallet_balances = Vec::with_capacity(balances.len());
+                        for balance in balances {
+                            let ibc_trace =
+                                if let Some(ibc_hash) = balance.denom.strip_prefix("ibc/") {
+                                    match query_ibc_denom_grpc_first(
+                                        &chain_info.apis.grpc,
+                                        &chain_info.apis.rest,
+                                        ibc_hash,
+                                    )
                                     .await
-                                {
-                                    Ok((_path, base_denom)) => {
-                                        format!(
-                                            "{} \\({}\\)",
-                                            escape_markdown(&base_denom),
-                                            escape_markdown(&truncate_ibc_hash(&bal.denom))
-                                        )
+                                    {
+                                        Ok(trace) => Some(trace),
+                                        Err(e) => {
+                                            log::warn!(
+                                                "Could not resolve IBC denom {}: {}",
+                                                balance.denom,
+                                                e
+                                            );
+                                            None
+                                        }
                                     }
-                                    Err(_) => escape_markdown(&bal.denom),
-                                }
-                            } else {
-                                escape_markdown(&bal.denom)
-                            };
+                                } else {
+                                    None
+                                };
+                            let asset_label =
+                                asset_label_for_denom(assets_data.as_ref(), &balance.denom);
 
-                            balance_lines.push(format!(
-                                "{} {}",
-                                escape_markdown(&format_amount(&bal.amount)),
-                                display_denom
-                            ));
+                            wallet_balances.push(WalletBalance {
+                                balance,
+                                ibc_trace,
+                                asset_label,
+                            });
                         }
 
-                        let truncated_addr = if address.len() > 20 {
-                            format!("{}\\.\\.\\.", escape_markdown(&address[..20]))
-                        } else {
-                            escape_markdown(address)
-                        };
-
-                        let mut message = format!(
-                            "💰 *Balances for* `{}`:\n\n{}",
-                            truncated_addr,
-                            balance_lines.join("\n")
+                        let message = format_wallet_balances(
+                            address,
+                            &chain,
+                            &wallet_balances,
+                            next_key.is_some(),
                         );
-
-                        if next_key.is_some() {
-                            message.push_str("\n\n_Showing first 100 tokens \\(more available\\)_");
-                        }
-
-                        bot.send_message(msg.chat.id, message)
-                            .parse_mode(ParseMode::MarkdownV2)
-                            .await?;
+                        edit_or_send_markdown_result(&bot, msg.chat.id, status.id, message).await?;
                     }
                 }
                 Err(e) => {
                     let error_message = format!(
                         "❌ Could not fetch balances:\n{}\n\n\
-                        The address might be invalid or the chain's REST API might be unavailable\\.",
+                        The address might be invalid or the chain's APIs might be unavailable\\.",
                         escape_markdown(&e.to_string())
                     );
-                    bot.send_message(msg.chat.id, error_message)
-                        .parse_mode(ParseMode::MarkdownV2)
+                    edit_or_send_markdown_result(&bot, msg.chat.id, status.id, error_message)
                         .await?;
                 }
             }
         } else {
-            bot.send_message(msg.chat.id, "Chain not found").await?;
+            edit_status_message(
+                &bot,
+                msg.chat.id,
+                status.id,
+                "Chain not found".to_string(),
+                None,
+            )
+            .await?;
         }
 
         // Show the menu after showing balance info
@@ -1269,26 +1430,45 @@ pub async fn handle_osmosis_pool_incentives(
             return Ok(());
         };
 
+        let status = bot
+            .send_message(
+                msg.chat.id,
+                format!("Fetching Osmosis pool {pool_id} incentives..."),
+            )
+            .await?;
+
         if let Some(chain_info) = cache.get_chain(&chain).await? {
             match query_osmosis_pool_incentives(&chain_info.apis.rest, &pool_id).await {
                 Ok(incentives) => {
-                    bot.send_message(
+                    edit_status_message(
+                        &bot,
                         msg.chat.id,
+                        status.id,
                         format_osmosis_pool_incentives(&pool_id, &incentives),
+                        None,
                     )
                     .await?;
                 }
                 Err(e) => {
-                    bot.send_message(
+                    edit_status_message(
+                        &bot,
                         msg.chat.id,
+                        status.id,
                         format!("Could not fetch Osmosis pool incentives: {e}"),
+                        None,
                     )
                     .await?;
                 }
             }
         } else {
-            bot.send_message(msg.chat.id, "Osmosis chain info not found.")
-                .await?;
+            edit_status_message(
+                &bot,
+                msg.chat.id,
+                status.id,
+                "Osmosis chain info not found.".to_string(),
+                None,
+            )
+            .await?;
         }
 
         let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
@@ -1323,20 +1503,45 @@ pub async fn handle_osmosis_pool_info(
             return Ok(());
         };
 
+        let status = bot
+            .send_message(
+                msg.chat.id,
+                format!("Fetching Osmosis pool {pool_id} info..."),
+            )
+            .await?;
+
         if let Some(chain_info) = cache.get_chain(&chain).await? {
             match query_osmosis_pool_info(&chain_info.apis.rest, &pool_id).await {
                 Ok(pool) => {
-                    bot.send_message(msg.chat.id, format_osmosis_pool_info(&pool_id, &pool))
-                        .await?;
+                    edit_status_message(
+                        &bot,
+                        msg.chat.id,
+                        status.id,
+                        format_osmosis_pool_info(&pool_id, &pool),
+                        None,
+                    )
+                    .await?;
                 }
                 Err(e) => {
-                    bot.send_message(msg.chat.id, format!("Could not fetch Osmosis pool: {e}"))
-                        .await?;
+                    edit_status_message(
+                        &bot,
+                        msg.chat.id,
+                        status.id,
+                        format!("Could not fetch Osmosis pool: {e}"),
+                        None,
+                    )
+                    .await?;
                 }
             }
         } else {
-            bot.send_message(msg.chat.id, "Osmosis chain info not found.")
-                .await?;
+            edit_status_message(
+                &bot,
+                msg.chat.id,
+                status.id,
+                "Osmosis chain info not found.".to_string(),
+                None,
+            )
+            .await?;
         }
 
         let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;
@@ -1365,14 +1570,33 @@ pub async fn handle_osmosis_token_price(
             )
             .await?;
         } else {
+            let status = bot
+                .send_message(
+                    msg.chat.id,
+                    format!("Fetching Osmosis price for {token}..."),
+                )
+                .await?;
+
             match query_osmosis_token_price(token).await {
                 Ok(price) => {
-                    bot.send_message(msg.chat.id, format_osmosis_token_price(&price))
-                        .await?;
+                    edit_status_message(
+                        &bot,
+                        msg.chat.id,
+                        status.id,
+                        format_osmosis_token_price(&price),
+                        None,
+                    )
+                    .await?;
                 }
                 Err(e) => {
-                    bot.send_message(msg.chat.id, format!("Could not fetch Osmosis price: {e}"))
-                        .await?;
+                    edit_status_message(
+                        &bot,
+                        msg.chat.id,
+                        status.id,
+                        format!("Could not fetch Osmosis price: {e}"),
+                        None,
+                    )
+                    .await?;
                 }
             }
         }
@@ -1459,14 +1683,20 @@ pub async fn handle_text(
                                         .await
                                         .unwrap_or_else(|| "Unknown".to_string());
 
+                                    let grpc = find_healthy_grpc_endpoint(&chain_info.apis.grpc)
+                                        .await
+                                        .unwrap_or_else(|| "Unknown".to_string());
+
                                     let explorer = chain_info
                                         .explorers
                                         .first()
                                         .map(|e| e.url.as_str())
                                         .unwrap_or("Unknown");
 
-                                    // Query ABCI info for version and block data
-                                    let abci_info = if rpc != "Unknown" {
+                                    // Prefer gRPC for node status, then fall back to RPC ABCI.
+                                    let abci_info = if grpc != "Unknown" {
+                                        query_abci_info_grpc(&grpc).await
+                                    } else if rpc != "Unknown" {
                                         query_abci_info(&rpc).await
                                     } else {
                                         None
@@ -1478,6 +1708,7 @@ pub async fn handle_text(
                                         Chain Name: `{}`\n\
                                         RPC: `{}`\n\
                                         REST: `{}`\n\
+                                        GRPC: `{}`\n\
                                         Address Prefix: `{}`\n\
                                         Base Denom: `{}`\n\
                                         Cointype: `{}`\n\
@@ -1488,6 +1719,7 @@ pub async fn handle_text(
                                         escape_markdown(&chain_info.chain_name),
                                         escape_markdown(&rpc),
                                         escape_markdown(&rest),
+                                        escape_markdown(&grpc),
                                         escape_markdown(&chain_info.bech32_prefix),
                                         escape_markdown(base_denom),
                                         chain_info.slip44,
@@ -1785,39 +2017,86 @@ pub async fn handle_text(
                 State::ChainSelected { chain, .. } | State::AwaitingIbcDenom { chain, .. } => {
                     let ibc_hash = &text[4..]; // Remove "ibc/" prefix
 
-                    // Get chain info to find REST endpoint
+                    send_processing_action(&bot, msg.chat.id).await;
+                    let status = bot
+                        .send_message(msg.chat.id, format!("Resolving IBC denom on {chain}..."))
+                        .await?;
+
                     if let Some(chain_info) = cache.get_chain(&chain).await? {
-                        if let Some(rest) = find_healthy_rest_endpoint(&chain_info.apis.rest).await
+                        match query_ibc_denom_grpc_first(
+                            &chain_info.apis.grpc,
+                            &chain_info.apis.rest,
+                            ibc_hash,
+                        )
+                        .await
                         {
-                            match query_ibc_denom(&rest, ibc_hash).await {
-                                Ok((path, base_denom)) => {
-                                    let message = if !path.is_empty() {
-                                        format!("✅ IBC Denom Trace Found:\n\nPath: {}\nBase Denomination: {}", path, base_denom)
-                                    } else {
-                                        format!(
-                                            "✅ IBC Denom Trace Found:\n\nBase Denomination: {}",
-                                            base_denom
+                            Ok(trace) => {
+                                let mut message = if !trace.path.is_empty() {
+                                    format!(
+                                        "✅ IBC Denom Trace Found:\n\nPath: {}\nBase Denomination: {}",
+                                        trace.path, trace.base_denom
+                                    )
+                                } else {
+                                    format!(
+                                        "✅ IBC Denom Trace Found:\n\nBase Denomination: {}",
+                                        trace.base_denom
+                                    )
+                                };
+
+                                if !trace.path.is_empty() {
+                                    if let Some(channel) = extract_channel_from_path(&trace.path) {
+                                        match query_ibc_channel_info_grpc_first(
+                                            &chain_info.apis.grpc,
+                                            &chain_info.apis.rest,
+                                            &channel,
+                                            "transfer",
                                         )
-                                    };
-                                    bot.send_message(msg.chat.id, message).await?;
+                                        .await
+                                        {
+                                            Ok(info) => {
+                                                message.push_str(&format!(
+                                                    "\n\n📍 Source Chain: {}\nvia {}",
+                                                    info.counterparty_chain_id, channel
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                log::warn!(
+                                                    "Could not fetch channel info for {}: {}",
+                                                    channel,
+                                                    e
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
-                                Err(e) => {
-                                    let error_message = format!(
-                                        "❌ Could not resolve IBC denom:\n{}\n\nThis denom might not exist on {} or the chain's REST API might be unavailable.",
-                                        e, chain
-                                    );
-                                    bot.send_message(msg.chat.id, error_message).await?;
-                                }
+
+                                edit_status_message(&bot, msg.chat.id, status.id, message, None)
+                                    .await?;
                             }
-                        } else {
-                            bot.send_message(
-                                msg.chat.id,
-                                "No healthy REST endpoint found for this chain",
-                            )
-                            .await?;
+                            Err(e) => {
+                                let error_message = format!(
+                                    "❌ Could not resolve IBC denom:\n{}\n\nThis denom might not exist on {} or the chain's APIs might be unavailable.",
+                                    e, chain
+                                );
+                                edit_status_message(
+                                    &bot,
+                                    msg.chat.id,
+                                    status.id,
+                                    error_message,
+                                    None,
+                                )
+                                .await?;
+                            }
                         }
                     } else {
-                        bot.send_message(msg.chat.id, "Chain not found").await?;
+                        edit_status_message(
+                            &bot,
+                            msg.chat.id,
+                            status.id,
+                            "Chain not found".to_string(),
+                            None,
+                        )
+                        .await?;
                     }
                     // Show menu again after IBC lookup
                     let new_menu_id = send_chain_menu(&bot, &msg, &chain).await?;

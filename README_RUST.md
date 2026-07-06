@@ -18,9 +18,9 @@ Core bot features:
 -  Peer nodes listing
 -  Endpoints display (RPC, REST, GRPC, EVM RPC where available)
 -  Block explorers
--  IBC denomination lookup
--  IBC route lookup by channel
--  Wallet balance lookup with IBC denom resolution
+-  gRPC-first IBC denomination lookup with REST fallback
+-  gRPC-first IBC route lookup by channel with REST fallback
+-  gRPC-first wallet balance lookup with IBC denom resolution
 -  Polkachu node installation guide links for supported chains
 -  Osmosis-specific features:
   - Pool info
@@ -64,8 +64,12 @@ RUST_LOG=debug cargo run
 - `src/bot.rs` - Bot state machine and dialogue handling
 - `src/handlers.rs` - Message and callback handlers
 - `src/cache.rs` - Registry data caching layer
-- `src/utils.rs` - Helper functions
+- `src/utils.rs` - gRPC, REST, IBC, Osmosis, and formatting helpers
 - `src/commands.rs` - Bot command definitions
+
+Direct Cosmos SDK queries prefer chain-registry gRPC endpoints, with Polkachu
+endpoints tried first when present. REST/RPC is retained as fallback for chains
+or modules where gRPC is unavailable.
 
 Legacy JavaScript/TypeScript versions are archived on isolated branches. The active `main` line is the Rust rewrite and should stay free of Node package artifacts.
 

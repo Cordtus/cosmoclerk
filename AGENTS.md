@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-CosmoClerk is a Rust 2021 Telegram bot for Cosmos chain-registry lookups. Source lives in `src/`: `main.rs` loads `.env` and starts the bot, `bot.rs` owns the Teloxide dialogue state machine, `handlers.rs` contains message/callback flows, `cache.rs` wraps chain data with a 30-minute TTL, `utils.rs` holds HTTP/IBC/Osmosis helpers, and `commands.rs` defines slash commands. Tests currently live in `src/tests.rs`. `README_RUST.md` documents setup, and `cosmoclerk.service` is the systemd deployment example. Legacy JS/TS code belongs only on isolated archive branches; keep Node package artifacts out of the Rust branch.
+CosmoClerk is a Rust 2021 Telegram bot for Cosmos chain-registry lookups. Source lives in `src/`: `main.rs` loads `.env` and starts the bot, `bot.rs` owns the Teloxide dialogue state machine, `handlers.rs` contains message/callback flows, `cache.rs` wraps chain data with a 30-minute TTL, `utils.rs` holds gRPC/HTTP/IBC/Osmosis helpers, and `commands.rs` defines slash commands. Tests currently live in `src/tests.rs`. `README_RUST.md` documents setup, and `cosmoclerk.service` is the systemd deployment example. Legacy JS/TS code belongs only on isolated archive branches; keep Node package artifacts out of the Rust branch.
 
 ## Build, Test, and Development Commands
 - `cp .env.example .env` then set `BOT_TOKEN` before running locally.
