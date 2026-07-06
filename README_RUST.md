@@ -8,22 +8,23 @@ A Rust implementation of the CosmoClerk Telegram bot using the [chain-registry-r
 - **Built-in Caching**: 30-minute TTL cache reduces API calls and improves response times (~50µs cached vs ~500ms network)
 - **Type Safety**: Rust's strong typing ensures data integrity
 - **Lower Memory Footprint**: No need to store entire registry locally
-# Built-in Caching: 30-minute TTL cache reduces API calls and improves response times
-- **Built-in Caching**: 30-minute TTL cache reduces API calls and improves response times (~50µs cached vs ~500ms network)
 
 ## Features
 
-All features from the original JS version are supported:
+Core bot features:
 
 -  Chain selection with pagination
 -  Chain info display (ID, name, RPC, REST, etc.)
 -  Peer nodes listing
--  Endpoints display (RPC, REST, GRPC)
+-  Endpoints display (RPC, REST, GRPC, EVM RPC where available)
 -  Block explorers
 -  IBC denomination lookup
+-  IBC route lookup by channel
+-  Wallet balance lookup with IBC denom resolution
+-  Polkachu node installation guide links for supported chains
 -  Osmosis-specific features:
-  - Pool incentives
   - Pool info
+  - LP incentive gauges and concentrated liquidity incentive records
   - Price info
 
 ## Setup
@@ -68,6 +69,8 @@ cargo fmt
 - `src/cache.rs` - Registry data caching layer
 - `src/utils.rs` - Helper functions
 - `src/commands.rs` - Bot command definitions
+
+Legacy JavaScript/TypeScript versions are archived on isolated branches. The active `main` line is the Rust rewrite and should stay free of Node package artifacts.
 
 ## Dependencies
 

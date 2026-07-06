@@ -40,7 +40,7 @@ impl RegistryCache {
         let chain = cosmos_chain_registry::get::get_chain(name)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        
+
         // If not found, try testnets
         let chain = if chain.is_none() {
             cosmos_chain_registry::get::get_chain(&format!("testnets/{}", name))
@@ -49,7 +49,7 @@ impl RegistryCache {
         } else {
             chain
         };
-        
+
         if let Some(ref c) = chain {
             self.chains.insert(
                 name.to_string(),
@@ -77,7 +77,7 @@ impl RegistryCache {
         let assets = cosmos_chain_registry::get::get_assets(name)
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        
+
         // If not found, try testnets
         let assets = if assets.is_none() {
             cosmos_chain_registry::get::get_assets(&format!("testnets/{}", name))
@@ -86,7 +86,7 @@ impl RegistryCache {
         } else {
             assets
         };
-        
+
         if let Some(ref a) = assets {
             self.assets.insert(
                 name.to_string(),
@@ -98,7 +98,6 @@ impl RegistryCache {
         }
         Ok(assets)
     }
-
 
     pub async fn list_chains(&self) -> anyhow::Result<Vec<String>> {
         // Check cache first
@@ -115,12 +114,10 @@ impl RegistryCache {
         let chains = cosmos_chain_registry::get::list_chains()
             .await
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        
+
         // Filter out the testnets directory itself
-        let chains: Vec<String> = chains.into_iter()
-            .filter(|c| c != "testnets")
-            .collect();
-        
+        let chains: Vec<String> = chains.into_iter().filter(|c| c != "testnets").collect();
+
         self.chain_list.insert(
             "mainnets".to_string(),
             CachedItem {
@@ -128,10 +125,10 @@ impl RegistryCache {
                 timestamp: Instant::now(),
             },
         );
-        
+
         Ok(chains)
     }
-    
+
     pub async fn list_testnets(&self) -> anyhow::Result<Vec<String>> {
         // Check cache first
         if let Some(cached) = self.chain_list.get("testnets") {

@@ -20,7 +20,6 @@ Osmosis pool addresses, specific incentives details, translating `ibc/...` denom
 - choose from one of the menu options<br>
 <br>
 more options to be added:<br>
-- wallet balances<br>
 - smart contract query<br>
 - more<br>
 Please make a detailed issue. contributions also welcome.
