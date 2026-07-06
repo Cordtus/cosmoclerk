@@ -231,17 +231,24 @@ pub async fn find_healthy_rest_endpoint(endpoints: &[chain::Rest]) -> Option<Str
 
 fn normalize_grpc_uri(address: &str) -> Option<String> {
     let address = address.trim().trim_end_matches('/');
-    if address.is_empty()
-        || address.starts_with("http://")
-        || (address.contains("://") && !address.starts_with("https://"))
-    {
+    if address.is_empty() {
         return None;
     }
 
-    if address.starts_with("https://") {
+    if address.starts_with("http://") || address.starts_with("https://") {
         Some(format!("{address}/"))
+    } else if address.contains("://") {
+        None
     } else {
-        Some(format!("https://{address}/"))
+        let lower = address.to_lowercase();
+        let explicit_port = address
+            .rsplit_once(':')
+            .map(|(_, port)| port)
+            .filter(|port| port.chars().all(|c| c.is_ascii_digit()));
+        let uses_tls = !lower.contains("polkachu.com")
+            && explicit_port.map(|port| port == "443").unwrap_or(true);
+        let scheme = if uses_tls { "https" } else { "http" };
+        Some(format!("{scheme}://{address}/"))
     }
 }
 
@@ -1224,7 +1231,11 @@ pub fn format_wallet_balances(
         escape_markdown(chain)
     );
 
-    for wallet_balance in balances {
+    for (index, wallet_balance) in balances.iter().enumerate() {
+        if index > 0 {
+            message.push_str("\n\n\\-\\-\\-");
+        }
+
         let label = display_asset_label(
             &wallet_balance.balance.denom,
             wallet_balance.ibc_trace.as_ref(),

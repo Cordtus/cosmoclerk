@@ -384,11 +384,11 @@ mod unit_tests {
     }
 
     #[test]
-    fn test_prioritize_grpc_endpoints_prefers_polkachu_https() {
+    fn test_prioritize_grpc_endpoints_prefers_polkachu_plaintext() {
         let endpoints = vec![
             chain::Grpc {
                 address: "http://insecure.example:9090".to_string(),
-                provider: Some("Insecure".to_string()),
+                provider: Some("Explicit".to_string()),
             },
             chain::Grpc {
                 address: "community-grpc.example:443".to_string(),
@@ -405,7 +405,8 @@ mod unit_tests {
         assert_eq!(
             prioritized,
             vec![
-                "https://osmosis-grpc.polkachu.com:12590/".to_string(),
+                "http://osmosis-grpc.polkachu.com:12590/".to_string(),
+                "http://insecure.example:9090/".to_string(),
                 "https://community-grpc.example:443/".to_string()
             ]
         );
@@ -451,6 +452,7 @@ mod unit_tests {
         assert!(formatted.contains("Amount: `999,999`"));
         assert!(formatted
             .contains("Denom: `factory/osmo1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/uspice`"));
+        assert_eq!(formatted.matches("\\-\\-\\-").count(), 1);
         assert!(formatted.contains("_Showing first 100 assets; more balances are available\\._"));
     }
 }

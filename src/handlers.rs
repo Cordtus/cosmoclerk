@@ -15,7 +15,7 @@ use cosmos_chain_registry::AssetList;
 use std::sync::Arc;
 use teloxide::{
     prelude::*,
-    types::{ChatId, InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ParseMode},
+    types::{ChatAction, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ParseMode},
 };
 
 pub async fn start(
@@ -423,6 +423,12 @@ async fn edit_or_send_markdown_result(
     }
 
     Ok(())
+}
+
+async fn send_processing_action(bot: &Bot, chat_id: ChatId) {
+    if let Err(e) = bot.send_chat_action(chat_id, ChatAction::Typing).await {
+        log::debug!("Could not send Telegram processing action: {}", e);
+    }
 }
 
 fn is_osmosis_mainnet(chain: &str) -> bool {
@@ -1027,6 +1033,7 @@ pub async fn handle_ibc_denom(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(text) = msg.text() {
         if let Some(ibc_hash) = text.strip_prefix("ibc/") {
+            send_processing_action(&bot, msg.chat.id).await;
             let status = bot
                 .send_message(msg.chat.id, format!("Resolving IBC denom on {chain}..."))
                 .await?;
@@ -1065,7 +1072,7 @@ pub async fn handle_ibc_denom(
                                 {
                                     Ok(info) => {
                                         message.push_str(&format!(
-                                            "\n\n📍 **Source Chain:** {}\n(via {})",
+                                            "\n\n📍 Source Chain: {}\nvia {}",
                                             info.counterparty_chain_id, channel
                                         ));
                                     }
@@ -1160,6 +1167,7 @@ pub async fn handle_ibc_channel(
             return Ok(());
         }
 
+        send_processing_action(&bot, msg.chat.id).await;
         let status = bot
             .send_message(msg.chat.id, format!("Looking up IBC route on {chain}..."))
             .await?;
@@ -1176,14 +1184,14 @@ pub async fn handle_ibc_channel(
                 Ok(info) => {
                     let message = format!(
                         "✅ IBC Route Information\n\n\
-                        **Source Chain:** {}\n\
-                        **Destination Chain:** {}\n\n\
-                        **Channel Details:**\n\
+                        Source Chain: {}\n\
+                        Destination Chain: {}\n\n\
+                        Channel Details:\n\
                         • Channel: {}\n\
                         • Port: {}\n\
                         • Client ID: {}\n\
                         • Connection: {}\n\n\
-                        **Counterparty Details:**\n\
+                        Counterparty Details:\n\
                         • Channel: {}\n\
                         • Client ID: {}\n\
                         • Connection: {}",
@@ -1277,6 +1285,7 @@ pub async fn handle_wallet_address(
             return Ok(());
         }
 
+        send_processing_action(&bot, msg.chat.id).await;
         let status = bot
             .send_message(msg.chat.id, format!("Checking balances on {chain}..."))
             .await?;
@@ -2008,6 +2017,7 @@ pub async fn handle_text(
                 State::ChainSelected { chain, .. } | State::AwaitingIbcDenom { chain, .. } => {
                     let ibc_hash = &text[4..]; // Remove "ibc/" prefix
 
+                    send_processing_action(&bot, msg.chat.id).await;
                     let status = bot
                         .send_message(msg.chat.id, format!("Resolving IBC denom on {chain}..."))
                         .await?;
@@ -2045,7 +2055,7 @@ pub async fn handle_text(
                                         {
                                             Ok(info) => {
                                                 message.push_str(&format!(
-                                                    "\n\n📍 **Source Chain:** {}\n(via {})",
+                                                    "\n\n📍 Source Chain: {}\nvia {}",
                                                     info.counterparty_chain_id, channel
                                                 ));
                                             }

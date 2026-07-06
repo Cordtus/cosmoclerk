@@ -32,7 +32,7 @@ NoNewPrivileges=true
 #ReadWritePaths=/var/log/cosmoclerk
 
 # Resource limits
-MemoryLimit=256M
+MemoryMax=256M
 CPUQuota=50%
 
 # Logging
