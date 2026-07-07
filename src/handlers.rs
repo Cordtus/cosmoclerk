@@ -2,13 +2,13 @@ use crate::{
     bot::{MyDialogue, State},
     cache::RegistryCache,
     utils::{
-        escape_markdown, extract_channel_from_path, find_healthy_endpoint,
-        find_healthy_grpc_endpoint, find_healthy_rest_endpoint, format_channel_input,
-        format_osmosis_pool_incentives, format_osmosis_pool_info, format_osmosis_token_price,
-        format_wallet_balances, get_polkachu_installation_url, query_abci_info,
-        query_abci_info_grpc, query_balances_grpc_first, query_ibc_channel_info_grpc_first,
-        query_ibc_denom_grpc_first, query_osmosis_pool_incentives, query_osmosis_pool_info,
-        query_osmosis_token_price, WalletBalance, PAGE_SIZE,
+        escape_markdown, extract_channel_from_path, find_healthy_grpc_endpoint,
+        first_endpoint_address, format_channel_input, format_osmosis_pool_incentives,
+        format_osmosis_pool_info, format_osmosis_token_price, format_wallet_balances,
+        get_polkachu_installation_url, query_abci_info_grpc, query_balances_grpc_first,
+        query_ibc_channel_info_grpc_first, query_ibc_denom_grpc_first,
+        query_osmosis_pool_incentives, query_osmosis_pool_info, query_osmosis_token_price,
+        WalletBalance, PAGE_SIZE,
     },
 };
 use cosmos_chain_registry::AssetList;
@@ -801,13 +801,8 @@ async fn show_chain_info(
             .map(|d| d.exponent.to_string())
             .unwrap_or_else(|| "Unknown".to_string());
 
-        let rpc = find_healthy_endpoint(&chain_info.apis.rpc, true)
-            .await
-            .unwrap_or_else(|| "Unknown".to_string());
-
-        let rest = find_healthy_rest_endpoint(&chain_info.apis.rest)
-            .await
-            .unwrap_or_else(|| "Unknown".to_string());
+        let rpc = first_endpoint_address(&chain_info.apis.rpc);
+        let rest = first_endpoint_address(&chain_info.apis.rest);
 
         let grpc = find_healthy_grpc_endpoint(&chain_info.apis.grpc)
             .await
@@ -819,11 +814,9 @@ async fn show_chain_info(
             .map(|e| e.url.as_str())
             .unwrap_or("Unknown");
 
-        // Prefer gRPC for node status, then fall back to RPC ABCI.
+        // User-visible status queries should use gRPC; RPC/REST endpoints are displayed only.
         let abci_info = if grpc != "Unknown" {
             query_abci_info_grpc(&grpc).await
-        } else if rpc != "Unknown" {
-            query_abci_info(&rpc).await
         } else {
             None
         };
@@ -1039,13 +1032,7 @@ pub async fn handle_ibc_denom(
                 .await?;
 
             if let Some(chain_info) = cache.get_chain(&chain).await? {
-                match query_ibc_denom_grpc_first(
-                    &chain_info.apis.grpc,
-                    &chain_info.apis.rest,
-                    ibc_hash,
-                )
-                .await
-                {
+                match query_ibc_denom_grpc_first(&chain_info.apis.grpc, ibc_hash).await {
                     Ok(trace) => {
                         let mut message = if !trace.path.is_empty() {
                             format!(
@@ -1064,7 +1051,6 @@ pub async fn handle_ibc_denom(
                             if let Some(channel) = extract_channel_from_path(&trace.path) {
                                 match query_ibc_channel_info_grpc_first(
                                     &chain_info.apis.grpc,
-                                    &chain_info.apis.rest,
                                     &channel,
                                     "transfer",
                                 )
@@ -1173,13 +1159,8 @@ pub async fn handle_ibc_channel(
             .await?;
 
         if let Some(chain_info) = cache.get_chain(&chain).await? {
-            match query_ibc_channel_info_grpc_first(
-                &chain_info.apis.grpc,
-                &chain_info.apis.rest,
-                &channel_id,
-                port_id,
-            )
-            .await
+            match query_ibc_channel_info_grpc_first(&chain_info.apis.grpc, &channel_id, port_id)
+                .await
             {
                 Ok(info) => {
                     let message = format!(
@@ -1299,14 +1280,7 @@ pub async fn handle_wallet_address(
                 }
             };
 
-            match query_balances_grpc_first(
-                &chain_info.apis.grpc,
-                &chain_info.apis.rest,
-                address,
-                None,
-            )
-            .await
-            {
+            match query_balances_grpc_first(&chain_info.apis.grpc, address, None).await {
                 Ok((balances, next_key)) => {
                     if balances.is_empty() {
                         let message = format!(
@@ -1319,28 +1293,25 @@ pub async fn handle_wallet_address(
                     } else {
                         let mut wallet_balances = Vec::with_capacity(balances.len());
                         for balance in balances {
-                            let ibc_trace =
-                                if let Some(ibc_hash) = balance.denom.strip_prefix("ibc/") {
-                                    match query_ibc_denom_grpc_first(
-                                        &chain_info.apis.grpc,
-                                        &chain_info.apis.rest,
-                                        ibc_hash,
-                                    )
+                            let ibc_trace = if let Some(ibc_hash) =
+                                balance.denom.strip_prefix("ibc/")
+                            {
+                                match query_ibc_denom_grpc_first(&chain_info.apis.grpc, ibc_hash)
                                     .await
-                                    {
-                                        Ok(trace) => Some(trace),
-                                        Err(e) => {
-                                            log::warn!(
-                                                "Could not resolve IBC denom {}: {}",
-                                                balance.denom,
-                                                e
-                                            );
-                                            None
-                                        }
+                                {
+                                    Ok(trace) => Some(trace),
+                                    Err(e) => {
+                                        log::warn!(
+                                            "Could not resolve IBC denom {}: {}",
+                                            balance.denom,
+                                            e
+                                        );
+                                        None
                                     }
-                                } else {
-                                    None
-                                };
+                                }
+                            } else {
+                                None
+                            };
                             let asset_label =
                                 asset_label_for_denom(assets_data.as_ref(), &balance.denom);
 
@@ -1438,7 +1409,7 @@ pub async fn handle_osmosis_pool_incentives(
             .await?;
 
         if let Some(chain_info) = cache.get_chain(&chain).await? {
-            match query_osmosis_pool_incentives(&chain_info.apis.rest, &pool_id).await {
+            match query_osmosis_pool_incentives(&chain_info.apis.grpc, &pool_id).await {
                 Ok(incentives) => {
                     edit_status_message(
                         &bot,
@@ -1511,7 +1482,7 @@ pub async fn handle_osmosis_pool_info(
             .await?;
 
         if let Some(chain_info) = cache.get_chain(&chain).await? {
-            match query_osmosis_pool_info(&chain_info.apis.rest, &pool_id).await {
+            match query_osmosis_pool_info(&chain_info.apis.grpc, &pool_id).await {
                 Ok(pool) => {
                     edit_status_message(
                         &bot,
@@ -1558,6 +1529,7 @@ pub async fn handle_osmosis_pool_info(
 pub async fn handle_osmosis_token_price(
     bot: Bot,
     dialogue: MyDialogue,
+    cache: Arc<RegistryCache>,
     msg: Message,
     (chain, _message_id): (String, Option<MessageId>),
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1577,27 +1549,38 @@ pub async fn handle_osmosis_token_price(
                 )
                 .await?;
 
-            match query_osmosis_token_price(token).await {
-                Ok(price) => {
-                    edit_status_message(
-                        &bot,
-                        msg.chat.id,
-                        status.id,
-                        format_osmosis_token_price(&price),
-                        None,
-                    )
-                    .await?;
+            if let Some(chain_info) = cache.get_chain(&chain).await? {
+                match query_osmosis_token_price(&chain_info.apis.grpc, token).await {
+                    Ok(price) => {
+                        edit_status_message(
+                            &bot,
+                            msg.chat.id,
+                            status.id,
+                            format_osmosis_token_price(&price),
+                            None,
+                        )
+                        .await?;
+                    }
+                    Err(e) => {
+                        edit_status_message(
+                            &bot,
+                            msg.chat.id,
+                            status.id,
+                            format!("Could not fetch Osmosis price: {e}"),
+                            None,
+                        )
+                        .await?;
+                    }
                 }
-                Err(e) => {
-                    edit_status_message(
-                        &bot,
-                        msg.chat.id,
-                        status.id,
-                        format!("Could not fetch Osmosis price: {e}"),
-                        None,
-                    )
-                    .await?;
-                }
+            } else {
+                edit_status_message(
+                    &bot,
+                    msg.chat.id,
+                    status.id,
+                    "Osmosis chain info not found.".to_string(),
+                    None,
+                )
+                .await?;
             }
         }
 
@@ -1675,13 +1658,8 @@ pub async fn handle_text(
                                         .map(|d| d.exponent.to_string())
                                         .unwrap_or_else(|| "Unknown".to_string());
 
-                                    let rpc = find_healthy_endpoint(&chain_info.apis.rpc, true)
-                                        .await
-                                        .unwrap_or_else(|| "Unknown".to_string());
-
-                                    let rest = find_healthy_rest_endpoint(&chain_info.apis.rest)
-                                        .await
-                                        .unwrap_or_else(|| "Unknown".to_string());
+                                    let rpc = first_endpoint_address(&chain_info.apis.rpc);
+                                    let rest = first_endpoint_address(&chain_info.apis.rest);
 
                                     let grpc = find_healthy_grpc_endpoint(&chain_info.apis.grpc)
                                         .await
@@ -1693,11 +1671,9 @@ pub async fn handle_text(
                                         .map(|e| e.url.as_str())
                                         .unwrap_or("Unknown");
 
-                                    // Prefer gRPC for node status, then fall back to RPC ABCI.
+                                    // User-visible status queries should use gRPC; RPC/REST endpoints are displayed only.
                                     let abci_info = if grpc != "Unknown" {
                                         query_abci_info_grpc(&grpc).await
-                                    } else if rpc != "Unknown" {
-                                        query_abci_info(&rpc).await
                                     } else {
                                         None
                                     };
@@ -2023,13 +1999,7 @@ pub async fn handle_text(
                         .await?;
 
                     if let Some(chain_info) = cache.get_chain(&chain).await? {
-                        match query_ibc_denom_grpc_first(
-                            &chain_info.apis.grpc,
-                            &chain_info.apis.rest,
-                            ibc_hash,
-                        )
-                        .await
-                        {
+                        match query_ibc_denom_grpc_first(&chain_info.apis.grpc, ibc_hash).await {
                             Ok(trace) => {
                                 let mut message = if !trace.path.is_empty() {
                                     format!(
@@ -2047,7 +2017,6 @@ pub async fn handle_text(
                                     if let Some(channel) = extract_channel_from_path(&trace.path) {
                                         match query_ibc_channel_info_grpc_first(
                                             &chain_info.apis.grpc,
-                                            &chain_info.apis.rest,
                                             &channel,
                                             "transfer",
                                         )

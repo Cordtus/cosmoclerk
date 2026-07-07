@@ -25,14 +25,59 @@ use ibc_proto::ibc::{
     },
     lightclients::tendermint::v1::ClientState as TendermintClientState,
 };
+use osmosis_std::{
+    shim::{Any as OsmosisAny, Duration as OsmosisDuration, Timestamp as OsmosisTimestamp},
+    types::osmosis::{
+        concentratedliquidity::v1beta1::{
+            IncentiveRecordsRequest, IncentiveRecordsResponse, Pool as ConcentratedPool,
+        },
+        cosmwasmpool::v1beta1::CosmWasmPool,
+        gamm::{
+            poolmodels::stableswap::v1beta1::Pool as StableswapPool, v1beta1::Pool as GammPool,
+        },
+        incentives::{GaugeByIdRequest, GaugeByIdResponse},
+        poolincentives::v1beta1::{QueryGaugeIdsRequest, QueryGaugeIdsResponse},
+        poolmanager::v1beta1::{
+            PoolRequest as PoolManagerPoolRequest, PoolResponse as PoolManagerPoolResponse,
+        },
+        txfees::v1beta1::{QueryDenomSpotPriceRequest, QueryDenomSpotPriceResponse},
+    },
+};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
-use tonic::transport::{Channel, Endpoint};
+use tonic::{
+    codec::ProstCodec,
+    codegen::http::uri::PathAndQuery,
+    transport::{Channel, Endpoint},
+};
 
 pub const PAGE_SIZE: usize = 18;
+
+pub trait EndpointAddress {
+    fn endpoint_address(&self) -> &str;
+}
+
+impl EndpointAddress for chain::Rpc {
+    fn endpoint_address(&self) -> &str {
+        &self.address
+    }
+}
+
+impl EndpointAddress for chain::Rest {
+    fn endpoint_address(&self) -> &str {
+        &self.address
+    }
+}
+
+pub fn first_endpoint_address<T: EndpointAddress>(endpoints: &[T]) -> String {
+    endpoints
+        .first()
+        .map(|endpoint| endpoint.endpoint_address().to_string())
+        .unwrap_or_else(|| "Unknown".to_string())
+}
 
 /// Returns the Polkachu installation guide URL for a chain if supported
 pub fn get_polkachu_installation_url(chain_name: &str) -> Option<String> {
@@ -164,71 +209,6 @@ pub struct IbcChannelInfo {
     pub counterparty_channel_id: String,
 }
 
-pub async fn check_endpoint_health(endpoint: &str, is_rpc: bool) -> bool {
-    if endpoint.starts_with("http://") || endpoint.is_empty() {
-        return false;
-    }
-
-    let url = if is_rpc {
-        format!("{}/status", endpoint.trim_end_matches('/'))
-    } else {
-        format!(
-            "{}/cosmos/base/tendermint/v1beta1/blocks/latest",
-            endpoint.trim_end_matches('/')
-        )
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .unwrap();
-
-    match client.get(&url).send().await {
-        Ok(response) if response.status().is_success() => {
-            match response.json::<Value>().await {
-                Ok(json) => {
-                    let block_time = if is_rpc {
-                        json["result"]["sync_info"]["latest_block_time"]
-                            .as_str()
-                            .or_else(|| json["sync_info"]["latest_block_time"].as_str())
-                    } else {
-                        json["block"]["header"]["time"].as_str()
-                    };
-
-                    if let Some(time_str) = block_time {
-                        if let Ok(block_time) = chrono::DateTime::parse_from_rfc3339(time_str) {
-                            let now = chrono::Utc::now();
-                            let diff = now.timestamp() - block_time.timestamp();
-                            return diff < 60; // Block is less than 60 seconds old
-                        }
-                    }
-                    false
-                }
-                Err(_) => false,
-            }
-        }
-        _ => false,
-    }
-}
-
-pub async fn find_healthy_endpoint(endpoints: &[chain::Rpc], is_rpc: bool) -> Option<String> {
-    for endpoint in endpoints {
-        if check_endpoint_health(&endpoint.address, is_rpc).await {
-            return Some(endpoint.address.clone());
-        }
-    }
-    None
-}
-
-pub async fn find_healthy_rest_endpoint(endpoints: &[chain::Rest]) -> Option<String> {
-    for endpoint in endpoints {
-        if check_endpoint_health(&endpoint.address, false).await {
-            return Some(endpoint.address.clone());
-        }
-    }
-    None
-}
-
 fn normalize_grpc_uri(address: &str) -> Option<String> {
     let address = address.trim().trim_end_matches('/');
     if address.is_empty() {
@@ -260,6 +240,31 @@ async fn connect_grpc(endpoint: &str) -> anyhow::Result<Channel> {
         .await?)
 }
 
+async fn grpc_unary<Req, Resp>(
+    channel: Channel,
+    path: &'static str,
+    request: Req,
+) -> anyhow::Result<Resp>
+where
+    Req: prost::Message + Default + Send + 'static,
+    Resp: prost::Message + Default + Send + 'static,
+{
+    let mut client = tonic::client::Grpc::new(channel);
+    client
+        .ready()
+        .await
+        .map_err(|e| anyhow::anyhow!("gRPC service not ready: {e}"))?;
+
+    Ok(client
+        .unary(
+            tonic::Request::new(request),
+            PathAndQuery::from_static(path),
+            ProstCodec::default(),
+        )
+        .await?
+        .into_inner())
+}
+
 pub async fn check_grpc_endpoint_health(endpoint: &str) -> bool {
     let Ok(channel) = connect_grpc(endpoint).await else {
         return false;
@@ -276,126 +281,6 @@ pub async fn find_healthy_grpc_endpoint(endpoints: &[chain::Grpc]) -> Option<Str
         }
     }
     None
-}
-
-pub async fn query_ibc_denom(
-    rest_endpoint: &str,
-    ibc_hash: &str,
-) -> anyhow::Result<(String, String)> {
-    // First try the standard endpoint
-    let url = format!(
-        "{}/ibc/apps/transfer/v1/denom_traces/{}",
-        rest_endpoint.trim_end_matches('/'),
-        ibc_hash
-    );
-
-    log::info!("Querying IBC denom trace at: {}", url);
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
-
-    let response = client.get(&url).send().await?;
-
-    // Check if the request was successful
-    if !response.status().is_success() {
-        // Try the alternate endpoint /denoms/{hash} for chains that use it
-        let alt_url = format!(
-            "{}/ibc/apps/transfer/v1/denoms/{}",
-            rest_endpoint.trim_end_matches('/'),
-            ibc_hash
-        );
-
-        log::info!("Trying alternate endpoint: {}", alt_url);
-
-        let alt_response = client.get(&alt_url).send().await?;
-
-        if !alt_response.status().is_success() {
-            return Err(anyhow::anyhow!(
-                "IBC denom query failed. The denom might not exist on this chain or the API might be unavailable."
-            ));
-        }
-
-        let json: Value = alt_response.json().await?;
-        log::debug!("IBC denom response (alternate): {}", json);
-
-        // Parse the alternate response format which has denom directly
-        if let Some(denom) = json["denom"].as_object() {
-            // The alternate format has "base" instead of "base_denom"
-            // and "trace" array instead of "path"
-            let base_denom = denom
-                .get("base")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow::anyhow!("Missing base in alternate response"))?;
-
-            // Reconstruct path from trace array
-            let path = if let Some(trace) = denom.get("trace").and_then(|v| v.as_array()) {
-                trace
-                    .iter()
-                    .filter_map(|entry| {
-                        let port = entry["port_id"].as_str()?;
-                        let channel = entry["channel_id"].as_str()?;
-                        Some(format!("{}/{}", port, channel))
-                    })
-                    .collect::<Vec<_>>()
-                    .join("/")
-            } else {
-                String::new()
-            };
-
-            return Ok((path, base_denom.to_string()));
-        }
-
-        return Err(anyhow::anyhow!(
-            "Invalid response format from alternate endpoint"
-        ));
-    }
-
-    let json: Value = response.json().await?;
-    log::debug!("IBC denom trace response: {}", json);
-
-    // Parse the standard response format
-    if let Some(trace) = json["denom_trace"].as_object() {
-        let path = trace.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        let base_denom = trace
-            .get("base_denom")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing base_denom in response"))?;
-
-        return Ok((path.to_string(), base_denom.to_string()));
-    }
-
-    // If denom_trace is not found in the expected format
-    Err(anyhow::anyhow!(
-        "Invalid response format: missing denom_trace"
-    ))
-}
-
-pub async fn query_ibc_denom_with_fallback(
-    endpoints: &[chain::Rest],
-    ibc_hash: &str,
-) -> anyhow::Result<(String, String)> {
-    let mut last_error = None;
-    let max_attempts = 3.min(endpoints.len());
-
-    for endpoint in endpoints.iter().take(max_attempts) {
-        // Skip non-HTTPS endpoints
-        if endpoint.address.starts_with("http://") || endpoint.address.is_empty() {
-            continue;
-        }
-
-        log::info!("Trying REST endpoint: {}", endpoint.address);
-
-        match query_ibc_denom(&endpoint.address, ibc_hash).await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                log::warn!("Failed with endpoint {}: {}", endpoint.address, e);
-                last_error = Some(e);
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available")))
 }
 
 pub async fn query_ibc_denom_grpc(
@@ -421,7 +306,6 @@ pub async fn query_ibc_denom_grpc(
 
 pub async fn query_ibc_denom_grpc_first(
     grpc_endpoints: &[chain::Grpc],
-    rest_endpoints: &[chain::Rest],
     ibc_hash: &str,
 ) -> anyhow::Result<IbcDenomTrace> {
     let mut last_error = None;
@@ -437,152 +321,7 @@ pub async fn query_ibc_denom_grpc_first(
         }
     }
 
-    match query_ibc_denom_with_fallback(rest_endpoints, ibc_hash).await {
-        Ok((path, base_denom)) => Ok(IbcDenomTrace { path, base_denom }),
-        Err(rest_error) => Err(last_error.unwrap_or(rest_error)),
-    }
-}
-
-pub async fn query_ibc_channel_info(
-    rest_endpoint: &str,
-    channel_id: &str,
-    port_id: &str,
-) -> anyhow::Result<IbcChannelInfo> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
-
-    let base_url = rest_endpoint.trim_end_matches('/');
-
-    // Fetch chain ID
-    let chain_info_url = format!("{}/cosmos/base/tendermint/v1beta1/node_info", base_url);
-    log::info!("Fetching chain ID from: {}", chain_info_url);
-
-    let response = client.get(&chain_info_url).send().await?;
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!("Failed to fetch chain info"));
-    }
-    let chain_info: Value = response.json().await?;
-    let chain_id = chain_info["default_node_info"]["network"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Chain ID not found"))?
-        .to_string();
-
-    // Fetch channel data
-    let channel_url = format!(
-        "{}/ibc/core/channel/v1/channels/{}/ports/{}",
-        base_url, channel_id, port_id
-    );
-    log::info!("Fetching channel data from: {}", channel_url);
-
-    let response = client.get(&channel_url).send().await?;
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "Channel {} not found on port {}",
-            channel_id,
-            port_id
-        ));
-    }
-    let channel_data: Value = response.json().await?;
-
-    let counterparty_channel_id = channel_data["channel"]["counterparty"]["channel_id"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Counterparty channel ID not found"))?
-        .to_string();
-
-    let connection_id = channel_data["channel"]["connection_hops"][0]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Connection ID not found"))?
-        .to_string();
-
-    // Fetch connection data
-    let connection_url = format!(
-        "{}/ibc/core/connection/v1/connections/{}",
-        base_url, connection_id
-    );
-    log::info!("Fetching connection data from: {}", connection_url);
-
-    let response = client.get(&connection_url).send().await?;
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!("Connection {} not found", connection_id));
-    }
-    let connection_data: Value = response.json().await?;
-
-    let client_id = connection_data["connection"]["client_id"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Client ID not found"))?
-        .to_string();
-
-    let counterparty_client_id = connection_data["connection"]["counterparty"]["client_id"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Counterparty client ID not found"))?
-        .to_string();
-
-    let counterparty_connection_id = connection_data["connection"]["counterparty"]["connection_id"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Counterparty connection ID not found"))?
-        .to_string();
-
-    // Fetch counterparty chain ID
-    let client_state_url = format!(
-        "{}/ibc/core/channel/v1/channels/{}/ports/{}/client_state",
-        base_url, channel_id, port_id
-    );
-    log::info!("Fetching counterparty chain ID from: {}", client_state_url);
-
-    let response = client.get(&client_state_url).send().await?;
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!("Failed to fetch client state"));
-    }
-    let client_state: Value = response.json().await?;
-
-    let counterparty_chain_id = client_state["identified_client_state"]["client_state"]["chain_id"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Counterparty chain ID not found"))?
-        .to_string();
-
-    Ok(IbcChannelInfo {
-        chain_id,
-        counterparty_chain_id,
-        client_id,
-        connection_id,
-        counterparty_client_id,
-        counterparty_connection_id,
-        channel_id: channel_id.to_string(),
-        counterparty_channel_id,
-    })
-}
-
-pub async fn query_ibc_channel_info_with_fallback(
-    endpoints: &[chain::Rest],
-    channel_id: &str,
-    port_id: &str,
-) -> anyhow::Result<IbcChannelInfo> {
-    let mut last_error = None;
-    let max_attempts = 3.min(endpoints.len());
-
-    for endpoint in endpoints.iter().take(max_attempts) {
-        // Skip non-HTTPS endpoints
-        if endpoint.address.starts_with("http://") || endpoint.address.is_empty() {
-            continue;
-        }
-
-        log::info!(
-            "Trying REST endpoint for channel info: {}",
-            endpoint.address
-        );
-
-        match query_ibc_channel_info(&endpoint.address, channel_id, port_id).await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                log::warn!("Failed with endpoint {}: {}", endpoint.address, e);
-                last_error = Some(e);
-            }
-        }
-    }
-
-    Err(last_error
-        .unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available for channel query")))
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid gRPC endpoints available")))
 }
 
 fn decode_tendermint_client_chain_id(
@@ -692,7 +431,6 @@ pub async fn query_ibc_channel_info_grpc(
 
 pub async fn query_ibc_channel_info_grpc_first(
     grpc_endpoints: &[chain::Grpc],
-    rest_endpoints: &[chain::Rest],
     channel_id: &str,
     port_id: &str,
 ) -> anyhow::Result<IbcChannelInfo> {
@@ -709,10 +447,7 @@ pub async fn query_ibc_channel_info_grpc_first(
         }
     }
 
-    match query_ibc_channel_info_with_fallback(rest_endpoints, channel_id, port_id).await {
-        Ok(result) => Ok(result),
-        Err(rest_error) => Err(last_error.unwrap_or(rest_error)),
-    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid gRPC endpoints available")))
 }
 
 pub fn extract_channel_from_path(path: &str) -> Option<String> {
@@ -759,38 +494,6 @@ pub struct AbciInfo {
     pub version: String,
     pub last_block_height: String,
     pub last_block_app_hash: String,
-}
-
-/// Query the ABCI info endpoint to get the chain's software version and block info
-pub async fn query_abci_info(rpc_endpoint: &str) -> Option<AbciInfo> {
-    let url = format!("{}/abci_info", rpc_endpoint.trim_end_matches('/'));
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .ok()?;
-
-    let response = client.get(&url).send().await.ok()?;
-
-    if !response.status().is_success() {
-        return None;
-    }
-
-    let json: Value = response.json().await.ok()?;
-
-    let resp = &json["result"]["response"];
-
-    Some(AbciInfo {
-        version: resp["version"].as_str().unwrap_or("Unknown").to_string(),
-        last_block_height: resp["last_block_height"]
-            .as_str()
-            .unwrap_or("Unknown")
-            .to_string(),
-        last_block_app_hash: resp["last_block_app_hash"]
-            .as_str()
-            .unwrap_or("Unknown")
-            .to_string(),
-    })
 }
 
 fn bytes_to_upper_hex(bytes: &[u8]) -> String {
@@ -866,6 +569,23 @@ pub struct WalletBalance {
     pub asset_label: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OsmosisPoolAsset {
+    pub denom: String,
+    pub amount: String,
+    pub weight: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OsmosisPoolInfo {
+    pub pool_type: String,
+    pub address: Option<String>,
+    pub swap_fee: Option<String>,
+    pub total_shares: Option<String>,
+    pub assets: Vec<OsmosisPoolAsset>,
+    pub current_tick_liquidity: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct OsmosisGaugeIncentive {
     pub gauge_id: String,
@@ -921,23 +641,6 @@ async fn get_json(client: &reqwest::Client, url: &str) -> anyhow::Result<Value> 
     Ok(response.json().await?)
 }
 
-fn parse_coin_array(value: &Value) -> Vec<Balance> {
-    value
-        .as_array()
-        .map(|coins| {
-            coins
-                .iter()
-                .filter_map(|coin| {
-                    Some(Balance {
-                        denom: coin["denom"].as_str()?.to_string(),
-                        amount: coin["amount"].as_str()?.to_string(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 fn encode_query_component(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -974,64 +677,6 @@ fn resolve_token_metadata(metadata: &Value, input: &str) -> Option<OsmosisTokenM
     }
 
     preview_match
-}
-
-/// Query wallet balances from chain REST API
-/// Returns balances and optional pagination key for next page
-pub async fn query_balances(
-    rest_endpoint: &str,
-    address: &str,
-    pagination_key: Option<&str>,
-) -> anyhow::Result<(Vec<Balance>, Option<String>)> {
-    let base_url = rest_endpoint.trim_end_matches('/');
-
-    let url = match pagination_key {
-        Some(key) => format!(
-            "{}/cosmos/bank/v1beta1/balances/{}?pagination.limit=100&pagination.key={}",
-            base_url, address, key
-        ),
-        None => format!(
-            "{}/cosmos/bank/v1beta1/balances/{}?pagination.limit=100",
-            base_url, address
-        ),
-    };
-
-    log::info!("Querying balances at: {}", url);
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
-
-    let response = client.get(&url).send().await?;
-
-    if !response.status().is_success() {
-        return Err(anyhow::anyhow!(
-            "Balance query failed with status: {}",
-            response.status()
-        ));
-    }
-
-    let json: Value = response.json().await?;
-    log::debug!("Balance response: {}", json);
-
-    let balances = json["balances"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("Invalid response: missing balances array"))?
-        .iter()
-        .filter_map(|b| {
-            let denom = b["denom"].as_str()?.to_string();
-            let amount = b["amount"].as_str()?.to_string();
-            Some(Balance { denom, amount })
-        })
-        .collect();
-
-    // Check for pagination
-    let next_key = json["pagination"]["next_key"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
-
-    Ok((balances, next_key))
 }
 
 pub async fn query_balances_grpc(
@@ -1077,39 +722,8 @@ pub async fn query_balances_grpc(
     Ok((balances, next_key))
 }
 
-/// Query balances with fallback to multiple REST endpoints
-pub async fn query_balances_with_fallback(
-    endpoints: &[chain::Rest],
-    address: &str,
-    pagination_key: Option<&str>,
-) -> anyhow::Result<(Vec<Balance>, Option<String>)> {
-    let mut last_error = None;
-    let max_attempts = 3.min(endpoints.len());
-
-    for endpoint in endpoints.iter().take(max_attempts) {
-        // Skip non-HTTPS endpoints
-        if endpoint.address.starts_with("http://") || endpoint.address.is_empty() {
-            continue;
-        }
-
-        log::info!("Trying REST endpoint for balances: {}", endpoint.address);
-
-        match query_balances(&endpoint.address, address, pagination_key).await {
-            Ok(result) => return Ok(result),
-            Err(e) => {
-                log::warn!("Failed with endpoint {}: {}", endpoint.address, e);
-                last_error = Some(e);
-            }
-        }
-    }
-
-    Err(last_error
-        .unwrap_or_else(|| anyhow::anyhow!("No valid REST endpoints available for balance query")))
-}
-
 pub async fn query_balances_grpc_first(
     grpc_endpoints: &[chain::Grpc],
-    rest_endpoints: &[chain::Rest],
     address: &str,
     pagination_key: Option<&str>,
 ) -> anyhow::Result<(Vec<Balance>, Option<String>)> {
@@ -1130,10 +744,7 @@ pub async fn query_balances_grpc_first(
         }
     }
 
-    match query_balances_with_fallback(rest_endpoints, address, pagination_key).await {
-        Ok(result) => Ok(result),
-        Err(rest_error) => Err(last_error.unwrap_or(rest_error)),
-    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid gRPC endpoints available")))
 }
 
 /// Format amount with thousands separators
@@ -1269,133 +880,330 @@ pub fn format_wallet_balances(
     message
 }
 
+fn parse_pool_id_value(pool_id: &str) -> anyhow::Result<u64> {
+    pool_id
+        .parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("Pool ID must be numeric"))
+}
+
+fn non_empty(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn balance_from_osmosis_coin(coin: osmosis_std::types::cosmos::base::v1beta1::Coin) -> Balance {
+    Balance {
+        denom: coin.denom,
+        amount: coin.amount,
+    }
+}
+
+fn balance_from_osmosis_dec_coin(
+    coin: osmosis_std::types::cosmos::base::v1beta1::DecCoin,
+) -> Balance {
+    Balance {
+        denom: coin.denom,
+        amount: coin.amount,
+    }
+}
+
+fn duration_to_string(duration: Option<&OsmosisDuration>) -> String {
+    match duration {
+        Some(duration) if duration.nanos == 0 => format!("{}s", duration.seconds),
+        Some(duration) => format!("{}.{:09}s", duration.seconds, duration.nanos.abs()),
+        None => "unknown".to_string(),
+    }
+}
+
+fn timestamp_to_string(timestamp: Option<&OsmosisTimestamp>) -> String {
+    timestamp
+        .and_then(|timestamp| {
+            chrono::DateTime::<chrono::Utc>::from_timestamp(
+                timestamp.seconds,
+                timestamp.nanos as u32,
+            )
+        })
+        .map(|timestamp| timestamp.to_rfc3339())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn pool_info_from_gamm_pool(pool: GammPool) -> OsmosisPoolInfo {
+    OsmosisPoolInfo {
+        pool_type: "Balancer".to_string(),
+        address: non_empty(pool.address),
+        swap_fee: pool
+            .pool_params
+            .and_then(|params| non_empty(params.swap_fee)),
+        total_shares: pool
+            .total_shares
+            .and_then(|shares| non_empty(shares.amount)),
+        assets: pool
+            .pool_assets
+            .into_iter()
+            .filter_map(|asset| {
+                let token = asset.token?;
+                Some(OsmosisPoolAsset {
+                    denom: token.denom,
+                    amount: token.amount,
+                    weight: non_empty(asset.weight),
+                })
+            })
+            .collect(),
+        current_tick_liquidity: None,
+    }
+}
+
+fn pool_info_from_stableswap_pool(pool: StableswapPool) -> OsmosisPoolInfo {
+    OsmosisPoolInfo {
+        pool_type: "Stableswap".to_string(),
+        address: non_empty(pool.address),
+        swap_fee: pool
+            .pool_params
+            .and_then(|params| non_empty(params.swap_fee)),
+        total_shares: pool
+            .total_shares
+            .and_then(|shares| non_empty(shares.amount)),
+        assets: pool
+            .pool_liquidity
+            .into_iter()
+            .map(|coin| OsmosisPoolAsset {
+                denom: coin.denom,
+                amount: coin.amount,
+                weight: None,
+            })
+            .collect(),
+        current_tick_liquidity: None,
+    }
+}
+
+fn pool_info_from_concentrated_pool(pool: ConcentratedPool) -> OsmosisPoolInfo {
+    OsmosisPoolInfo {
+        pool_type: "Concentrated".to_string(),
+        address: non_empty(pool.address),
+        swap_fee: non_empty(pool.spread_factor),
+        total_shares: None,
+        assets: [pool.token0, pool.token1]
+            .into_iter()
+            .filter(|denom| !denom.is_empty())
+            .map(|denom| OsmosisPoolAsset {
+                denom,
+                amount: String::new(),
+                weight: None,
+            })
+            .collect(),
+        current_tick_liquidity: non_empty(pool.current_tick_liquidity),
+    }
+}
+
+fn pool_info_from_cosmwasm_pool(pool: CosmWasmPool) -> OsmosisPoolInfo {
+    OsmosisPoolInfo {
+        pool_type: "CosmWasm".to_string(),
+        address: non_empty(pool.contract_address),
+        swap_fee: None,
+        total_shares: None,
+        assets: Vec::new(),
+        current_tick_liquidity: None,
+    }
+}
+
+fn decode_osmosis_pool(pool: OsmosisAny) -> anyhow::Result<OsmosisPoolInfo> {
+    match pool.type_url.as_str() {
+        "/osmosis.gamm.v1beta1.Pool" => Ok(pool_info_from_gamm_pool(GammPool::decode(
+            pool.value.as_slice(),
+        )?)),
+        "/osmosis.gamm.poolmodels.stableswap.v1beta1.Pool" => Ok(pool_info_from_stableswap_pool(
+            StableswapPool::decode(pool.value.as_slice())?,
+        )),
+        "/osmosis.concentratedliquidity.v1beta1.Pool" => Ok(pool_info_from_concentrated_pool(
+            ConcentratedPool::decode(pool.value.as_slice())?,
+        )),
+        "/osmosis.cosmwasmpool.v1beta1.CosmWasmPool" => Ok(pool_info_from_cosmwasm_pool(
+            CosmWasmPool::decode(pool.value.as_slice())?,
+        )),
+        other => Err(anyhow::anyhow!("Unsupported Osmosis pool type {other}")),
+    }
+}
+
+async fn query_osmosis_pool_info_grpc(
+    grpc_endpoint: &str,
+    pool_id: u64,
+) -> anyhow::Result<OsmosisPoolInfo> {
+    let response: PoolManagerPoolResponse = grpc_unary(
+        connect_grpc(grpc_endpoint).await?,
+        "/osmosis.poolmanager.v1beta1.Query/Pool",
+        PoolManagerPoolRequest { pool_id },
+    )
+    .await?;
+
+    decode_osmosis_pool(
+        response.pool.ok_or_else(|| {
+            anyhow::anyhow!("Osmosis pool {pool_id} response missing pool object")
+        })?,
+    )
+}
+
 pub async fn query_osmosis_pool_info(
-    endpoints: &[chain::Rest],
+    grpc_endpoints: &[chain::Grpc],
     pool_id: &str,
-) -> anyhow::Result<Value> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
-    let paths = [
-        format!("/osmosis/poolmanager/v1beta1/pools/{pool_id}"),
-        format!("/osmosis/gamm/v1beta1/pools/{pool_id}"),
-    ];
-    let max_attempts = 3.min(endpoints.len());
+) -> anyhow::Result<OsmosisPoolInfo> {
+    let pool_id = parse_pool_id_value(pool_id)?;
     let mut last_error = None;
 
-    for endpoint in endpoints.iter().take(max_attempts) {
-        if endpoint.address.starts_with("http://") || endpoint.address.is_empty() {
-            continue;
-        }
-
-        for path in &paths {
-            let url = format!("{}{}", endpoint.address.trim_end_matches('/'), path);
-            match get_json(&client, &url).await {
-                Ok(json) => {
-                    if let Some(pool) = json.get("pool") {
-                        return Ok(pool.clone());
-                    }
-                    last_error = Some(anyhow::anyhow!("pool response missing pool object"));
-                }
-                Err(e) => last_error = Some(e),
+    for endpoint in prioritize_grpc_endpoints(grpc_endpoints).iter().take(3) {
+        match query_osmosis_pool_info_grpc(endpoint, pool_id).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!("Failed Osmosis pool gRPC query with endpoint {endpoint}: {e}");
+                last_error = Some(e);
             }
         }
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No Osmosis REST pool endpoint available")))
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid Osmosis gRPC endpoint available")))
+}
+
+async fn query_osmosis_pool_incentives_grpc(
+    grpc_endpoint: &str,
+    pool_id: u64,
+) -> anyhow::Result<OsmosisPoolIncentives> {
+    let channel = connect_grpc(grpc_endpoint).await?;
+    let gauge_ids: QueryGaugeIdsResponse = grpc_unary(
+        channel.clone(),
+        "/osmosis.poolincentives.v1beta1.Query/GaugeIds",
+        QueryGaugeIdsRequest { pool_id },
+    )
+    .await?;
+
+    let mut gauges = Vec::new();
+    for gauge in gauge_ids.gauge_ids_with_duration.into_iter().take(8) {
+        let gauge_detail = grpc_unary::<GaugeByIdRequest, GaugeByIdResponse>(
+            channel.clone(),
+            "/osmosis.incentives.Query/GaugeByID",
+            GaugeByIdRequest { id: gauge.gauge_id },
+        )
+        .await
+        .ok()
+        .and_then(|response| response.gauge);
+
+        let (coins, distributed_coins) = gauge_detail
+            .map(|gauge| {
+                (
+                    gauge
+                        .coins
+                        .into_iter()
+                        .map(balance_from_osmosis_coin)
+                        .collect(),
+                    gauge
+                        .distributed_coins
+                        .into_iter()
+                        .map(balance_from_osmosis_coin)
+                        .collect(),
+                )
+            })
+            .unwrap_or_else(|| (Vec::new(), Vec::new()));
+
+        gauges.push(OsmosisGaugeIncentive {
+            gauge_id: gauge.gauge_id.to_string(),
+            duration: duration_to_string(gauge.duration.as_ref()),
+            incentive_percentage: non_empty(gauge.gauge_incentive_percentage)
+                .unwrap_or_else(|| "unknown".to_string()),
+            coins,
+            distributed_coins,
+        });
+    }
+
+    let cl_records = grpc_unary::<IncentiveRecordsRequest, IncentiveRecordsResponse>(
+        channel,
+        "/osmosis.concentratedliquidity.v1beta1.Query/IncentiveRecords",
+        IncentiveRecordsRequest {
+            pool_id,
+            pagination: None,
+        },
+    )
+    .await
+    .map(|response| {
+        response
+            .incentive_records
+            .into_iter()
+            .take(8)
+            .filter_map(|record| {
+                let body = record.incentive_record_body?;
+                let coin = body.remaining_coin.map(balance_from_osmosis_dec_coin)?;
+                Some(OsmosisClIncentive {
+                    incentive_id: record.incentive_id.to_string(),
+                    denom: coin.denom,
+                    remaining_amount: coin.amount,
+                    emission_rate: body.emission_rate,
+                    start_time: timestamp_to_string(body.start_time.as_ref()),
+                })
+            })
+            .collect()
+    })
+    .unwrap_or_default();
+
+    Ok(OsmosisPoolIncentives { gauges, cl_records })
 }
 
 pub async fn query_osmosis_pool_incentives(
-    endpoints: &[chain::Rest],
+    grpc_endpoints: &[chain::Grpc],
     pool_id: &str,
 ) -> anyhow::Result<OsmosisPoolIncentives> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
-    let max_attempts = 3.min(endpoints.len());
+    let pool_id = parse_pool_id_value(pool_id)?;
     let mut last_error = None;
 
-    for endpoint in endpoints.iter().take(max_attempts) {
-        if endpoint.address.starts_with("http://") || endpoint.address.is_empty() {
-            continue;
-        }
-
-        let base = endpoint.address.trim_end_matches('/');
-        let gauge_url = format!("{base}/osmosis/pool-incentives/v1beta1/gauge-ids/{pool_id}");
-        let gauge_ids = match get_json(&client, &gauge_url).await {
-            Ok(json) => json,
+    for endpoint in prioritize_grpc_endpoints(grpc_endpoints).iter().take(3) {
+        match query_osmosis_pool_incentives_grpc(endpoint, pool_id).await {
+            Ok(result) => return Ok(result),
             Err(e) => {
+                log::warn!("Failed Osmosis incentives gRPC query with endpoint {endpoint}: {e}");
                 last_error = Some(e);
-                continue;
             }
-        };
-
-        let mut gauges = Vec::new();
-        for gauge in gauge_ids["gauge_ids_with_duration"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .take(8)
-        {
-            let Some(gauge_id) = gauge["gauge_id"].as_str() else {
-                continue;
-            };
-            let detail_url = format!("{base}/osmosis/incentives/v1beta1/gauge_by_id/{gauge_id}");
-            let detail = get_json(&client, &detail_url).await.unwrap_or_default();
-            let gauge_detail = &detail["gauge"];
-
-            gauges.push(OsmosisGaugeIncentive {
-                gauge_id: gauge_id.to_string(),
-                duration: gauge["duration"].as_str().unwrap_or("unknown").to_string(),
-                incentive_percentage: gauge["gauge_incentive_percentage"]
-                    .as_str()
-                    .unwrap_or("unknown")
-                    .to_string(),
-                coins: parse_coin_array(&gauge_detail["coins"]),
-                distributed_coins: parse_coin_array(&gauge_detail["distributed_coins"]),
-            });
         }
-
-        let cl_url = format!(
-            "{base}/osmosis/concentratedliquidity/v1beta1/incentive_records?pool_id={pool_id}"
-        );
-        let cl_json = get_json(&client, &cl_url).await.unwrap_or_default();
-        let cl_records = cl_json["incentive_records"]
-            .as_array()
-            .map(|records| {
-                records
-                    .iter()
-                    .take(8)
-                    .filter_map(|record| {
-                        let body = &record["incentive_record_body"];
-                        let coin = &body["remaining_coin"];
-                        Some(OsmosisClIncentive {
-                            incentive_id: record["incentive_id"].as_str()?.to_string(),
-                            denom: coin["denom"].as_str()?.to_string(),
-                            remaining_amount: coin["amount"].as_str()?.to_string(),
-                            emission_rate: body["emission_rate"].as_str()?.to_string(),
-                            start_time: body["start_time"]
-                                .as_str()
-                                .unwrap_or("unknown")
-                                .to_string(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        return Ok(OsmosisPoolIncentives { gauges, cl_records });
     }
 
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No Osmosis incentive endpoint available")))
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid Osmosis gRPC endpoint available")))
 }
 
-pub async fn query_osmosis_token_price(token: &str) -> anyhow::Result<OsmosisTokenPrice> {
+async fn query_osmosis_denom_spot_price_grpc(
+    grpc_endpoint: &str,
+    denom: &str,
+) -> anyhow::Result<QueryDenomSpotPriceResponse> {
+    grpc_unary(
+        connect_grpc(grpc_endpoint).await?,
+        "/osmosis.txfees.v1beta1.Query/DenomSpotPrice",
+        QueryDenomSpotPriceRequest {
+            denom: denom.to_string(),
+        },
+    )
+    .await
+}
+
+async fn query_osmosis_denom_spot_price_grpc_first(
+    grpc_endpoints: &[chain::Grpc],
+    denom: &str,
+) -> anyhow::Result<QueryDenomSpotPriceResponse> {
+    let mut last_error = None;
+
+    for endpoint in prioritize_grpc_endpoints(grpc_endpoints).iter().take(3) {
+        match query_osmosis_denom_spot_price_grpc(endpoint, denom).await {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                log::warn!("Failed Osmosis txfees gRPC query with endpoint {endpoint}: {e}");
+                last_error = Some(e);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("No valid Osmosis gRPC endpoint available")))
+}
+
+async fn query_osmosis_token_price_sqs(
+    metadata: &Value,
+    token: &str,
+) -> anyhow::Result<OsmosisTokenPrice> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()?;
-    let metadata = get_json(&client, "https://sqs.osmosis.zone/tokens/metadata").await?;
-    let token_metadata = resolve_token_metadata(&metadata, token).unwrap_or_else(|| {
+    let token_metadata = resolve_token_metadata(metadata, token).unwrap_or_else(|| {
         let trimmed = token.trim().to_string();
         OsmosisTokenMetadata {
             name: trimmed.clone(),
@@ -1418,7 +1226,7 @@ pub async fn query_osmosis_token_price(token: &str) -> anyhow::Result<OsmosisTok
         .iter()
         .next()
         .ok_or_else(|| anyhow::anyhow!("No price quote found for {}", token_metadata.symbol))?;
-    let quote_metadata = resolve_token_metadata(&metadata, quote_denom);
+    let quote_metadata = resolve_token_metadata(metadata, quote_denom);
 
     Ok(OsmosisTokenPrice {
         name: token_metadata.name,
@@ -1433,42 +1241,107 @@ pub async fn query_osmosis_token_price(token: &str) -> anyhow::Result<OsmosisTok
     })
 }
 
-fn short_pool_type(pool_type: &str) -> &str {
-    pool_type.rsplit('.').next().unwrap_or(pool_type)
+async fn fetch_osmosis_token_metadata() -> Option<Value> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+
+    get_json(&client, "https://sqs.osmosis.zone/tokens/metadata")
+        .await
+        .ok()
 }
 
-pub fn format_osmosis_pool_info(pool_id: &str, pool: &Value) -> String {
-    let pool_type = pool["@type"].as_str().unwrap_or("unknown");
-    let mut message = format!(
-        "Osmosis Pool {pool_id}\nType: {}\n",
-        short_pool_type(pool_type)
-    );
+fn looks_like_base_denom(token: &str) -> bool {
+    let token = token.trim();
+    token.contains('/') || token.starts_with('u')
+}
 
-    if let Some(address) = pool["address"].as_str() {
+pub async fn query_osmosis_token_price(
+    grpc_endpoints: &[chain::Grpc],
+    token: &str,
+) -> anyhow::Result<OsmosisTokenPrice> {
+    let trimmed = token.trim().to_string();
+    let mut metadata = if looks_like_base_denom(&trimmed) {
+        None
+    } else {
+        fetch_osmosis_token_metadata().await
+    };
+    let token_metadata = metadata
+        .as_ref()
+        .and_then(|metadata| resolve_token_metadata(metadata, token));
+    let denom = token_metadata
+        .as_ref()
+        .map(|metadata| metadata.denom.clone())
+        .unwrap_or_else(|| trimmed.clone());
+
+    match query_osmosis_denom_spot_price_grpc_first(grpc_endpoints, &denom).await {
+        Ok(price) => Ok(OsmosisTokenPrice {
+            name: token_metadata
+                .as_ref()
+                .map(|metadata| metadata.name.clone())
+                .unwrap_or_else(|| trimmed.clone()),
+            symbol: token_metadata
+                .as_ref()
+                .map(|metadata| metadata.symbol.clone())
+                .unwrap_or_else(|| trimmed.clone()),
+            denom,
+            quote_symbol: "OSMO".to_string(),
+            quote_denom: "uosmo".to_string(),
+            price: price.spot_price,
+        }),
+        Err(grpc_error) => {
+            if metadata.is_none() {
+                metadata = fetch_osmosis_token_metadata().await;
+            }
+            if let Some(metadata) = metadata {
+                log::warn!(
+                    "Falling back to SQS token price after gRPC price failure: {grpc_error}"
+                );
+                query_osmosis_token_price_sqs(&metadata, token).await
+            } else {
+                Err(grpc_error)
+            }
+        }
+    }
+}
+
+pub fn format_osmosis_pool_info(pool_id: &str, pool: &OsmosisPoolInfo) -> String {
+    let mut message = format!("Osmosis Pool {pool_id}\nType: {}\n", pool.pool_type);
+
+    if let Some(address) = &pool.address {
         message.push_str(&format!("Address: {address}\n"));
     }
-    if let Some(swap_fee) = pool["pool_params"]["swap_fee"].as_str() {
+    if let Some(swap_fee) = &pool.swap_fee {
         message.push_str(&format!("Swap Fee: {swap_fee}\n"));
     }
-    if let Some(total_shares) = pool["total_shares"]["amount"].as_str() {
+    if let Some(total_shares) = &pool.total_shares {
         message.push_str(&format!("Total Shares: {}\n", format_amount(total_shares)));
     }
 
-    if let Some(assets) = pool["pool_assets"].as_array() {
+    if !pool.assets.is_empty() {
         message.push_str("\nAssets:\n");
-        for asset in assets.iter().take(8) {
-            let token = &asset["token"];
-            let denom = token["denom"].as_str().unwrap_or("unknown");
-            let amount = token["amount"].as_str().unwrap_or("0");
-            let weight = asset["weight"].as_str().unwrap_or("unknown");
-            message.push_str(&format!(
-                "- {}: {} (weight {})\n",
-                truncate_ibc_hash(denom),
-                format_amount(amount),
-                weight
-            ));
+        for asset in pool.assets.iter().take(8) {
+            if asset.amount.is_empty() {
+                message.push_str(&format!("- {}\n", truncate_ibc_hash(&asset.denom)));
+            } else if let Some(weight) = &asset.weight {
+                message.push_str(&format!(
+                    "- {}: {} (weight {})\n",
+                    truncate_ibc_hash(&asset.denom),
+                    format_amount(&asset.amount),
+                    weight
+                ));
+            } else {
+                message.push_str(&format!(
+                    "- {}: {}\n",
+                    truncate_ibc_hash(&asset.denom),
+                    format_amount(&asset.amount)
+                ));
+            }
         }
-    } else if let Some(liquidity) = pool["current_tick_liquidity"].as_str() {
+    }
+
+    if let Some(liquidity) = &pool.current_tick_liquidity {
         message.push_str(&format!("Current Tick Liquidity: {liquidity}\n"));
     }
 

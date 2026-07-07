@@ -3,14 +3,14 @@ mod unit_tests {
     use crate::{
         bot::{MyDialogue, State},
         utils::{
-            format_channel_input, format_osmosis_pool_incentives, format_osmosis_pool_info,
-            format_osmosis_token_price, format_wallet_balances, prioritize_grpc_endpoints, Balance,
-            IbcDenomTrace, OsmosisGaugeIncentive, OsmosisPoolIncentives, OsmosisTokenPrice,
+            first_endpoint_address, format_channel_input, format_osmosis_pool_incentives,
+            format_osmosis_pool_info, format_osmosis_token_price, format_wallet_balances,
+            prioritize_grpc_endpoints, Balance, IbcDenomTrace, OsmosisGaugeIncentive,
+            OsmosisPoolAsset, OsmosisPoolIncentives, OsmosisPoolInfo, OsmosisTokenPrice,
             WalletBalance,
         },
     };
     use cosmos_chain_registry::chain;
-    use serde_json::json;
     use teloxide::{
         dispatching::dialogue::InMemStorage,
         types::{ChatId, InlineKeyboardButton, MessageId},
@@ -323,23 +323,51 @@ mod unit_tests {
 
     #[test]
     fn test_osmosis_pool_info_formatting() {
-        let pool = json!({
-            "@type": "/osmosis.gamm.v1beta1.Pool",
-            "address": "osmo1pool",
-            "pool_params": {"swap_fee": "0.002000000000000000"},
-            "total_shares": {"amount": "1234567890"},
-            "pool_assets": [
-                {"token": {"denom": "uosmo", "amount": "1000000"}, "weight": "50"},
-                {"token": {"denom": "ibc/1234567890ABCDEF", "amount": "2000000"}, "weight": "50"}
-            ]
-        });
+        let pool = OsmosisPoolInfo {
+            pool_type: "Balancer".to_string(),
+            address: Some("osmo1pool".to_string()),
+            swap_fee: Some("0.002000000000000000".to_string()),
+            total_shares: Some("1234567890".to_string()),
+            assets: vec![
+                OsmosisPoolAsset {
+                    denom: "uosmo".to_string(),
+                    amount: "1000000".to_string(),
+                    weight: Some("50".to_string()),
+                },
+                OsmosisPoolAsset {
+                    denom: "ibc/1234567890ABCDEF".to_string(),
+                    amount: "2000000".to_string(),
+                    weight: Some("50".to_string()),
+                },
+            ],
+            current_tick_liquidity: None,
+        };
 
         let formatted = format_osmosis_pool_info("1", &pool);
 
         assert!(formatted.contains("Osmosis Pool 1"));
-        assert!(formatted.contains("Type: Pool"));
+        assert!(formatted.contains("Type: Balancer"));
         assert!(formatted.contains("uosmo: 1,000,000"));
         assert!(formatted.contains("ibc/12345678..."));
+    }
+
+    #[test]
+    fn test_first_endpoint_address_uses_registry_without_health_probe() {
+        let endpoints = vec![
+            chain::Rest {
+                address: "http://local-node.example:1317".to_string(),
+                provider: Some("Local".to_string()),
+            },
+            chain::Rest {
+                address: "https://rest.example:443".to_string(),
+                provider: Some("Public".to_string()),
+            },
+        ];
+
+        assert_eq!(
+            first_endpoint_address(&endpoints),
+            "http://local-node.example:1317"
+        );
     }
 
     #[test]
