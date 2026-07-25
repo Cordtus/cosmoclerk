@@ -43,7 +43,8 @@ TELEGRAM_API_ROOT=http://tgbotapi.lxd:8081
 ```
 
 Remove or unset `TELEGRAM_API_ROOT` to use Telegram's public API at
-`https://api.telegram.org`. Custom roots must be valid `http` or `https` URLs.
+`https://api.telegram.org`. Custom roots must be valid `http` or `https` origins
+containing only a host and optional port, without a path, query, or fragment.
 
 2. Build the project:
 ```bash

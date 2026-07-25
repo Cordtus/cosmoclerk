@@ -70,6 +70,45 @@ mod unit_tests {
         );
     }
 
+    #[test]
+    fn test_telegram_api_url_rejects_path_prefix() {
+        let error = telegram_api_url(Some("http://tgbotapi.lxd:8081/telegram"))
+            .expect_err("Telegram API URL path prefix should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("TELEGRAM_API_ROOT must not include a path"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_telegram_api_url_rejects_query() {
+        let error = telegram_api_url(Some("http://tgbotapi.lxd:8081/?local=true"))
+            .expect_err("Telegram API URL query should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("TELEGRAM_API_ROOT must not include a query or fragment"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_telegram_api_url_rejects_fragment() {
+        let error = telegram_api_url(Some("http://tgbotapi.lxd:8081/#telegram"))
+            .expect_err("Telegram API URL fragment should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("TELEGRAM_API_ROOT must not include a query or fragment"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn test_state_transitions() {
         let dialogue = create_test_dialogue().await;

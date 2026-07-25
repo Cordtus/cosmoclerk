@@ -24,8 +24,15 @@ fn telegram_api_url(configured_root: Option<&str>) -> Result<reqwest::Url> {
         );
     }
 
-    let path = format!("{}/", url.path().trim_end_matches('/'));
-    url.set_path(&path);
+    if url.query().is_some() || url.fragment().is_some() {
+        bail!("TELEGRAM_API_ROOT must not include a query or fragment");
+    }
+
+    if !url.path().trim_end_matches('/').is_empty() {
+        bail!("TELEGRAM_API_ROOT must not include a path");
+    }
+
+    url.set_path("/");
 
     Ok(url)
 }
