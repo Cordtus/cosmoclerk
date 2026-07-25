@@ -35,6 +35,16 @@ cp .env.example .env
 # Edit .env and add your Telegram bot token
 ```
 
+The example config points `TELEGRAM_API_ROOT` at the standard production
+Telegram Bot API service:
+
+```dotenv
+TELEGRAM_API_ROOT=http://tgbotapi.lxd:8081
+```
+
+Remove or unset `TELEGRAM_API_ROOT` to use Telegram's public API at
+`https://api.telegram.org`. Custom roots must be valid `http` or `https` URLs.
+
 2. Build the project:
 ```bash
 cargo build --release
@@ -89,6 +99,14 @@ standard systemd/LXC deployment used by this repo, keep the bot token in
 
 ```bash
 DEPLOY_TARGET=tgbot ./scripts/deploy.sh
+```
+
+The production `/etc/cosmoclerk/.env` should contain:
+
+```dotenv
+BOT_TOKEN=your_telegram_bot_token_here
+TELEGRAM_API_ROOT=http://tgbotapi.lxd:8081
+RUST_LOG=info
 ```
 
 `scripts/deploy.sh` builds the release binary, pushes it to

@@ -2,6 +2,7 @@
 mod unit_tests {
     use crate::{
         bot::{MyDialogue, State},
+        telegram_api_url,
         utils::{
             first_endpoint_address, format_channel_input, format_osmosis_pool_incentives,
             format_osmosis_pool_info, format_osmosis_token_price, format_wallet_balances,
@@ -20,6 +21,53 @@ mod unit_tests {
     async fn create_test_dialogue() -> MyDialogue {
         let storage = InMemStorage::<State>::new();
         MyDialogue::new(storage, ChatId(123456))
+    }
+
+    #[test]
+    fn test_telegram_api_url_defaults_to_public_api() {
+        let url = telegram_api_url(None).expect("default Telegram API URL should be valid");
+
+        assert_eq!(url.as_str(), "https://api.telegram.org/");
+    }
+
+    #[test]
+    fn test_telegram_api_url_accepts_local_http_api() {
+        let url = telegram_api_url(Some("http://tgbotapi.lxd:8081"))
+            .expect("local Telegram API URL should be valid");
+
+        assert_eq!(url.as_str(), "http://tgbotapi.lxd:8081/");
+    }
+
+    #[test]
+    fn test_telegram_api_url_normalizes_trailing_slash() {
+        let url = telegram_api_url(Some("http://tgbotapi.lxd:8081///"))
+            .expect("Telegram API URL with a trailing slash should be valid");
+
+        assert_eq!(url.as_str(), "http://tgbotapi.lxd:8081/");
+    }
+
+    #[test]
+    fn test_telegram_api_url_rejects_malformed_url() {
+        let error = telegram_api_url(Some("not a url"))
+            .expect_err("malformed Telegram API URL should be rejected");
+
+        assert!(
+            error.to_string().contains("invalid TELEGRAM_API_ROOT"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn test_telegram_api_url_rejects_unsupported_scheme() {
+        let error = telegram_api_url(Some("ftp://tgbotapi.lxd:8081"))
+            .expect_err("non-HTTP Telegram API URL should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("TELEGRAM_API_ROOT must use http or https"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

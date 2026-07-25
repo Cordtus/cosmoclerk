@@ -17,6 +17,7 @@ WorkingDirectory=/etc/cosmoclerk
 
 # Environment variables (uncomment and set if not using .env file)
 #Environment="BOT_TOKEN=your_telegram_bot_token_here"
+#Environment="TELEGRAM_API_ROOT=http://tgbotapi.lxd:8081"
 #Environment="RUST_LOG=info"
 
 # Restart policy

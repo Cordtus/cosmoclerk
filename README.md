@@ -36,3 +36,8 @@ Currently rebuilding entire structure to make expansion possible<br>
 testing bot [may be offline] -- [here](https://t.me/cac_devbot) <br>
 
 <img src="https://github.com/Cordtus/cosmoclerk/assets/96965330/fe0757f0-d98b-43ee-bdcd-4574941858eb" width="600" height="485">
+
+Runtime setup and production deployment are documented in
+[README_RUST.md](README_RUST.md). The standard production environment uses
+`TELEGRAM_API_ROOT=http://tgbotapi.lxd:8081`; when the variable is unset,
+CosmoClerk uses Telegram's public API at `https://api.telegram.org`.

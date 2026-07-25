@@ -5,11 +5,30 @@ mod handlers;
 mod tests;
 mod utils;
 
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use dotenv::dotenv;
 use log::info;
 use std::env;
 use teloxide::prelude::*;
+
+const DEFAULT_TELEGRAM_API_ROOT: &str = "https://api.telegram.org";
+
+fn telegram_api_url(configured_root: Option<&str>) -> Result<reqwest::Url> {
+    let configured_root = configured_root.unwrap_or(DEFAULT_TELEGRAM_API_ROOT);
+    let mut url = reqwest::Url::parse(configured_root).context("invalid TELEGRAM_API_ROOT")?;
+
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!(
+            "TELEGRAM_API_ROOT must use http or https, got {:?}",
+            url.scheme()
+        );
+    }
+
+    let path = format!("{}/", url.path().trim_end_matches('/'));
+    url.set_path(&path);
+
+    Ok(url)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,10 +36,16 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     let bot_token = env::var("BOT_TOKEN").expect("BOT_TOKEN must be set");
+    let configured_api_root = match env::var("TELEGRAM_API_ROOT") {
+        Ok(root) => Some(root),
+        Err(env::VarError::NotPresent) => None,
+        Err(error) => return Err(error).context("TELEGRAM_API_ROOT must be valid Unicode"),
+    };
+    let api_url = telegram_api_url(configured_api_root.as_deref())?;
 
     info!("Starting CosmoClerk Rust bot...");
 
-    let bot = Bot::new(bot_token);
+    let bot = Bot::new(bot_token).set_api_url(api_url);
 
     bot::run(bot)
         .await
