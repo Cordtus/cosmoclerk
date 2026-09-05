@@ -357,10 +357,12 @@ mod unit_tests {
             chain::Rest {
                 address: "http://local-node.example:1317".to_string(),
                 provider: Some("Local".to_string()),
+                archive: None,
             },
             chain::Rest {
                 address: "https://rest.example:443".to_string(),
                 provider: Some("Public".to_string()),
+                archive: None,
             },
         ];
 
@@ -417,14 +419,17 @@ mod unit_tests {
             chain::Grpc {
                 address: "http://insecure.example:9090".to_string(),
                 provider: Some("Explicit".to_string()),
+                archive: None,
             },
             chain::Grpc {
                 address: "community-grpc.example:443".to_string(),
                 provider: Some("Community".to_string()),
+                archive: None,
             },
             chain::Grpc {
                 address: "osmosis-grpc.polkachu.com:12590".to_string(),
                 provider: Some("Polkachu".to_string()),
+                archive: None,
             },
         ];
 
