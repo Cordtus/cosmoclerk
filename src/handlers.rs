@@ -825,6 +825,7 @@ async fn show_chain_info(
             "🔗 *{}*\n\n\
             Chain ID: `{}`\n\
             Chain Name: `{}`\n\
+            Chain Type: `{}`\n\
             RPC: `{}`\n\
             REST: `{}`\n\
             GRPC: `{}`\n\
@@ -836,6 +837,7 @@ async fn show_chain_info(
             escape_markdown(&chain_info.pretty_name),
             escape_markdown(&chain_info.chain_id),
             escape_markdown(&chain_info.chain_name),
+            escape_markdown(&chain_info.chain_type),
             escape_markdown(&rpc),
             escape_markdown(&rest),
             escape_markdown(&grpc),
@@ -845,6 +847,26 @@ async fn show_chain_info(
             decimals,
             escape_markdown(explorer)
         );
+
+        // Append chain description if available
+        if !chain_info.description.is_empty() {
+            message.push_str(&format!(
+                "\n\n*Description*\n{}",
+                escape_markdown(&chain_info.description)
+            ));
+        }
+
+        // Append snapshot providers if available
+        if !chain_info.snapshots.is_empty() {
+            message.push_str("\n\n*Snapshots*");
+            for snapshot in chain_info.snapshots.iter().take(3) {
+                message.push_str(&format!(
+                    "\n{}: `{}`",
+                    escape_markdown(&snapshot.provider),
+                    escape_markdown(&snapshot.url)
+                ));
+            }
+        }
 
         // Append ABCI info if available
         if let Some(info) = abci_info {
@@ -967,6 +989,32 @@ async fn show_endpoints(
                     "*{}*:\n`{}`\n\n",
                     escape_markdown(provider),
                     escape_markdown(&evm_rpc.address)
+                ));
+            }
+        }
+
+        if !chain_info.apis.wss.is_empty() {
+            message.push_str("\n*WSS*\n\\-\\-\\-\\-\n");
+
+            for wss in chain_info.apis.wss.iter().take(5) {
+                let provider = wss.provider.as_deref().unwrap_or("unknown");
+                message.push_str(&format!(
+                    "*{}*:\n`{}`\n\n",
+                    escape_markdown(provider),
+                    escape_markdown(&wss.address)
+                ));
+            }
+        }
+
+        if !chain_info.apis.grpc_web.is_empty() {
+            message.push_str("\n*GRPC Web*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\n");
+
+            for grpc_web in chain_info.apis.grpc_web.iter().take(5) {
+                let provider = grpc_web.provider.as_deref().unwrap_or("unknown");
+                message.push_str(&format!(
+                    "*{}*:\n`{}`\n\n",
+                    escape_markdown(provider),
+                    escape_markdown(&grpc_web.address)
                 ));
             }
         }
@@ -1233,7 +1281,10 @@ fn asset_label_for_denom(assets: Option<&AssetList>, denom: &str) -> Option<Stri
             || asset
                 .denom_units
                 .iter()
-                .any(|denom_unit| denom_unit.denom == denom)
+                .any(|denom_unit| {
+                    denom_unit.denom == denom
+                        || denom_unit.aliases.iter().any(|alias| alias == denom)
+                })
     })?;
 
     [&asset.symbol, &asset.name, &asset.display]
@@ -2193,4 +2244,60 @@ pub async fn handle_callback(
 
     bot.answer_callback_query(q.id).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::asset_label_for_denom;
+    use cosmos_chain_registry::assets::{Asset, AssetList, DenomUnit};
+
+    fn asset_list_with_aliases() -> AssetList {
+        AssetList {
+            schema: String::new(),
+            chain_name: "test".to_string(),
+            assets: vec![Asset {
+                base: "ibc/ABC".to_string(),
+                name: "USD Coin".to_string(),
+                symbol: "USDC".to_string(),
+                display: "usdc".to_string(),
+                denom_units: vec![
+                    DenomUnit {
+                        denom: "ibc/ABC".to_string(),
+                        exponent: 0,
+                        aliases: vec!["uusdc".to_string()],
+                    },
+                    DenomUnit {
+                        denom: "usdc".to_string(),
+                        exponent: 6,
+                        aliases: vec![],
+                    },
+                ],
+                ..Default::default()
+            }],
+        }
+    }
+
+    #[test]
+    fn asset_label_matches_base_denom() {
+        let assets = asset_list_with_aliases();
+        assert_eq!(
+            asset_label_for_denom(Some(&assets), "ibc/ABC").as_deref(),
+            Some("USDC")
+        );
+    }
+
+    #[test]
+    fn asset_label_matches_alias() {
+        let assets = asset_list_with_aliases();
+        assert_eq!(
+            asset_label_for_denom(Some(&assets), "uusdc").as_deref(),
+            Some("USDC")
+        );
+    }
+
+    #[test]
+    fn asset_label_returns_none_for_unknown_denom() {
+        let assets = asset_list_with_aliases();
+        assert_eq!(asset_label_for_denom(Some(&assets), "unknown"), None);
+    }
 }
