@@ -13,7 +13,7 @@ env:
 jobs:
   rust:
     name: rust checks
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, runner-class-cac]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

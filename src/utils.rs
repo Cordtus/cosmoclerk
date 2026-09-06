@@ -641,6 +641,20 @@ async fn get_json(client: &reqwest::Client, url: &str) -> anyhow::Result<Value> 
     Ok(response.json().await?)
 }
 
+/// Returns whether a snapshot URL is reachable (returns HTTP 200).
+pub async fn snapshot_provider_online(url: &str) -> bool {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    client
+        .get(url)
+        .send()
+        .await
+        .map(|response| response.status().is_success())
+        .unwrap_or(false)
+}
+
 fn encode_query_component(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.bytes() {
@@ -852,23 +866,29 @@ pub fn format_wallet_balances(
             wallet_balance.ibc_trace.as_ref(),
             wallet_balance.asset_label.as_deref(),
         );
+        let full_denom = wallet_balance.balance.denom.as_str();
+        let label_line = if label == full_denom {
+            // No pretty name; show the full denom on its own.
+            format!("*{}*", escape_markdown(full_denom))
+        } else {
+            // Show both the pretty name/symbol and the full copyable denom.
+            format!(
+                "*{}* (`{}`)",
+                escape_markdown(&label),
+                escape_markdown_code(full_denom)
+            )
+        };
         message.push_str(&format!(
-            "\n\n*{}*\nAmount: `{}`",
-            escape_markdown(&label),
+            "\n\n{}\nAmount: `{}`",
+            label_line,
             escape_markdown_code(&format_amount(&wallet_balance.balance.amount))
         ));
 
         if let Some(trace) = &wallet_balance.ibc_trace {
             message.push_str(&format!(
-                "\nIBC Denom: `{}`\nIBC Path: `{}`\nBase Denom: `{}`",
-                escape_markdown_code(&wallet_balance.balance.denom),
+                "\nIBC Path: `{}`\nBase Denom: `{}`",
                 escape_markdown_code(&trace.path),
                 escape_markdown_code(&trace.base_denom)
-            ));
-        } else {
-            message.push_str(&format!(
-                "\nDenom: `{}`",
-                escape_markdown_code(&wallet_balance.balance.denom)
             ));
         }
     }
