@@ -8,7 +8,7 @@ use crate::{
         get_polkachu_installation_url, query_abci_info_grpc, query_balances_grpc_first,
         query_ibc_channel_info_grpc_first, query_ibc_denom_grpc_first,
         query_osmosis_pool_incentives, query_osmosis_pool_info, query_osmosis_token_price,
-        WalletBalance, PAGE_SIZE,
+        snapshot_provider_online, WalletBalance, PAGE_SIZE,
     },
 };
 use cosmos_chain_registry::AssetList;
@@ -856,15 +856,23 @@ async fn show_chain_info(
             ));
         }
 
-        // Append snapshot providers if available
+        // Append snapshot providers if available (only those currently online)
         if !chain_info.snapshots.is_empty() {
-            message.push_str("\n\n*Snapshots*");
-            for snapshot in chain_info.snapshots.iter().take(3) {
-                message.push_str(&format!(
-                    "\n{}: `{}`",
-                    escape_markdown(&snapshot.provider),
-                    escape_markdown(&snapshot.url)
-                ));
+            let mut online = Vec::new();
+            for snapshot in chain_info.snapshots.iter().take(5) {
+                if snapshot_provider_online(&snapshot.url).await {
+                    online.push(snapshot);
+                }
+            }
+            if !online.is_empty() {
+                message.push_str("\n\n*Snapshots*");
+                for snapshot in online.iter().take(3) {
+                    message.push_str(&format!(
+                        "\n{}: `{}`",
+                        escape_markdown(&snapshot.provider),
+                        escape_markdown(&snapshot.url)
+                    ));
+                }
             }
         }
 
@@ -1002,19 +1010,6 @@ async fn show_endpoints(
                     "*{}*:\n`{}`\n\n",
                     escape_markdown(provider),
                     escape_markdown(&wss.address)
-                ));
-            }
-        }
-
-        if !chain_info.apis.grpc_web.is_empty() {
-            message.push_str("\n*GRPC Web*\n\\-\\-\\-\\-\\-\\-\\-\\-\\-\n");
-
-            for grpc_web in chain_info.apis.grpc_web.iter().take(5) {
-                let provider = grpc_web.provider.as_deref().unwrap_or("unknown");
-                message.push_str(&format!(
-                    "*{}*:\n`{}`\n\n",
-                    escape_markdown(provider),
-                    escape_markdown(&grpc_web.address)
                 ));
             }
         }
