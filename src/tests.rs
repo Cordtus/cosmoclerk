@@ -561,17 +561,15 @@ mod unit_tests {
             format_wallet_balances("osmo1wev8ptzj27aueu0abc", "osmosis", &balances, true);
 
         assert!(formatted.contains("*Balances for* `osmo1wev8ptzj27aueu0...`"));
-        assert!(formatted.contains("*LOKI*"));
+        // Pretty label with the full copyable denom shown alongside
+        assert!(formatted.contains("*LOKI* (`ibc/23B7FFE8D1673E1EBF05AB02000E23E6077967B79547A3733B60AE4ED62C4D32`)"));
         assert!(formatted.contains("Amount: `10,000,000`"));
-        assert!(formatted.contains(
-            "IBC Denom: `ibc/23B7FFE8D1673E1EBF05AB02000E23E6077967B79547A3733B60AE4ED62C4D32`"
-        ));
         assert!(formatted.contains("IBC Path: `transfer/channel-123/transfer/channel-42`"));
         assert!(formatted.contains("Base Denom: `loki`"));
-        assert!(formatted.contains("*SPICE*"));
+        assert!(formatted.contains(
+            "*SPICE* (`factory/osmo1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/uspice`)"
+        ));
         assert!(formatted.contains("Amount: `999,999`"));
-        assert!(formatted
-            .contains("Denom: `factory/osmo1n6asrjy9754q8y9jsxqf557zmsv3s3xa5m9eg5/uspice`"));
         assert_eq!(formatted.matches("\\-\\-\\-").count(), 1);
         assert!(formatted.contains("_Showing first 100 assets; more balances are available\\._"));
     }
